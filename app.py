@@ -148,6 +148,7 @@ class TablesPanel(ctk.CTkFrame):
     def __init__(self, parent, **kw):
         super().__init__(parent, fg_color=BG, corner_radius=0, **kw)
         _init_ttk_theme()
+        self._data = {}
         s = ttk.Style()
         s.configure("ICT.Treeview", background=S3, fieldbackground=S3,
                     foreground=TXT, rowheight=38, font=("Segoe UI",12))
@@ -155,6 +156,27 @@ class TablesPanel(ctk.CTkFrame):
                     font=("Segoe UI",11,"bold"), relief="flat", padding=(12,10))
         s.map("ICT.Treeview", background=[("selected",S1)])
         s.layout("ICT.Treeview",[("ICT.Treeview.treearea",{"sticky":"nswe"})])
+
+        # ── Search bar ──
+        sbar = ctk.CTkFrame(self, fg_color=S1, corner_radius=0,
+                            border_width=1, border_color=BD, height=48)
+        sbar.pack(fill="x"); sbar.pack_propagate(False)
+        ctk.CTkLabel(sbar, text="  🔍 FIND COMPONENT",
+                     font=("Segoe UI",10,"bold"), text_color=INFO).pack(side="left", padx=(12,8))
+        self._q = tk.StringVar()
+        self._q.trace_add("write", lambda *_: self._render())
+        ctk.CTkEntry(sbar, textvariable=self._q, width=360, height=32,
+                     font=("Courier New",12), fg_color=S3, text_color=TXT,
+                     border_color=BD,
+                     placeholder_text="Type ref, type or status (e.g. AR11, Resistor, FAIL)..."
+                     ).pack(side="left", padx=4)
+        ctk.CTkButton(sbar, text="⌫ Clear", width=70, height=32,
+                      fg_color=S3, hover_color=S1, border_color=BD, border_width=1,
+                      font=("Segoe UI",10), text_color=MUT,
+                      command=lambda: self._q.set("")).pack(side="left", padx=4)
+        self._count = ctk.CTkLabel(sbar, text="", font=("Segoe UI",10), text_color=MUT)
+        self._count.pack(side="right", padx=14)
+
         self.tabs = ctk.CTkTabview(self, fg_color=S2,
             segmented_button_fg_color=S3, segmented_button_selected_color=INFO,
             segmented_button_selected_hover_color="#0097a7",
@@ -163,10 +185,10 @@ class TablesPanel(ctk.CTkFrame):
         self.tabs.pack(fill="both", expand=True)
         self.tv_comp  = self._tab("Component Results",
             ["Ref","Type","Nominal","Measured","Deviation","Status"],
-            [100,140,160,160,140,110])
+            [300,120,140,140,120,100])          # Ref column widened
         self.tv_fail  = self._tab("Failed Components",
             ["Ref","Type","Nominal","Measured","Deviation","Limit","Note"],
-            [100,130,140,140,120,120,300])
+            [300,120,130,130,110,100,260])
 
     def _tab(self, name, cols, widths):
         tab = self.tabs.add(name)
@@ -189,17 +211,37 @@ class TablesPanel(ctk.CTkFrame):
             for r in tv.get_children(): tv.delete(r)
 
     def populate(self, data):
+        self._data = data
+        self._render()
+
+    def _render(self):
         self._clear()
-        for c in data.get("components",[]):
+        q = self._q.get().strip().lower()
+
+        def match(c):
+            if not q: return True
+            return (q in str(c.get("ref","")).lower() or
+                    q in str(c.get("type","")).lower() or
+                    q in str(c.get("status","")).lower())
+
+        comps = self._data.get("components", [])
+        fails = self._data.get("failed_detail", [])
+        shown_c = [c for c in comps if match(c)]
+        shown_f = [c for c in fails if match(c)]
+
+        for c in shown_c:
             self.tv_comp.insert("","end", values=(
                 c["ref"],c["type"],c.get("nominal","—"),c.get("measured","—"),
                 c.get("deviation","—"),c["status"]),
                 tags=("pass" if c["status"]=="PASS" else "fail",))
-        for c in data.get("failed_detail",[]):
+        for c in shown_f:
             self.tv_fail.insert("","end", values=(
                 c["ref"],c["type"],c.get("nominal","—"),c.get("measured","—"),
                 c.get("deviation","—"),c.get("limit","—"),c.get("note","—")),
                 tags=("fail",))
+
+        self._count.configure(
+            text=f"{len(shown_c)} of {len(comps)} components  ·  {len(shown_f)} failed")
 
 
 # ── DASHBOARD PAGE ────────────────────────────────────────────────
