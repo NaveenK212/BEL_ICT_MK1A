@@ -1,0 +1,45 @@
+BOARD_NAME: MAIN-PCB-v2.3
+SERIAL: SN20260428-001
+FIXTURE: FXT-0042
+OPERATOR: J.SMITH
+DATE: 2026-04-28
+FORMAT: AGILENT_3070
+
+# COMPONENT TESTS
+# REF, TYPE, NOMINAL, MEASURED, STATUS, NOTE
+R01, Resistor, 10000, 9970, PASS,
+R02, Resistor, 10000, 10020, PASS,
+R07, Resistor, 4700, 4710, PASS,
+R12, Resistor, 1000, 1003, PASS,
+R15, Resistor, 100, 99.8, PASS,
+R19, Resistor, 220, 221, PASS,
+R23, Resistor, 4700, 5210, FAIL, High resistance drift
+R31, Resistor, 33000, 33100, PASS,
+C01, Capacitor, 0.0000001, 0.0000000992, PASS,
+C05, Capacitor, 0.00001, 0.0000101, PASS,
+C12, Capacitor, 0.000000000022, 0.0000000000223, PASS,
+C18, Capacitor, 0.00000047, 0.000000468, PASS,
+C33, Capacitor, 0.000001, 0.00000102, PASS,
+C47, Capacitor, 0.0001, 0.0000912, FAIL, Capacitance loss aging risk
+U01, IC, LM7805, pass_in_circuit, PASS,
+U03, IC, NE555, pass_in_circuit, PASS,
+U07, IC, ATmega328P, pass_in_circuit, PASS,
+U09, IC, 74HC245, pass_in_circuit, PASS,
+U12, IC, LM358, fail_output_offset_48mV, FAIL, Output offset voltage exceeded limit
+U14, IC, TL431, fail_ref_2411mV, FAIL, Ref voltage below spec 2495mV
+Q01, Transistor, 2N2222, pass_in_circuit, PASS,
+Q03, Transistor, BC547, pass_in_circuit, PASS,
+Q07, Transistor, IRF540, pass_in_circuit, PASS,
+Q11, Transistor, BC557, pass_in_circuit, PASS,
+J1, Connector, 2-pin, continuity_ok, PASS,
+J2, Connector, 4-pin, continuity_ok, PASS,
+J3, Connector, USB-B, open_circuit_pin3, FAIL, Open circuit detected on pin 3
+J4, Connector, 6-pin, continuity_ok, PASS,
+
+# POWER RAILS
+# RAIL, NOMINAL, MEASURED, STATUS
+VCC, 3.300V, 3.312V, PASS
+V5V, 5.000V, 4.981V, PASS
+V12, 12.00V, 11.97V, PASS
+VBAT, 3.700V, 3.724V, PASS
+VREF, 2.495V, 2.411V, FAIL
