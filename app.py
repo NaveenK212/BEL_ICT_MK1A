@@ -216,7 +216,7 @@ class DashboardPage(ctk.CTkScrollableFrame):
         hdr = ctk.CTkFrame(self, fg_color="transparent", height=30)
         hdr.pack(fill="x", padx=10, pady=(6,2))
         hdr.pack_propagate(False)
-        ctk.CTkLabel(hdr, text="DASHBOARD", font=("Segoe UI",10,"bold"),
+        ctk.CTkLabel(hdr, text="DASHBOARD", font=("Segoe UI",18,"bold"),
                      text_color=INFO).pack(side="left")
         self._refresh_btn = ctk.CTkButton(
             hdr, text="↻  Refresh", width=80, height=24,
@@ -652,7 +652,7 @@ class SearchPage(ctk.CTkFrame):
                 r["total"], r["passed"], r["failed"],
                 f"{r['pass_rate']:.1f}%", r["status"]),
                 tags=(tag,))
-        self._count_lbl.configure(text=f"{len(results)} result(s)")
+        self._count_lbl.configure(text=f"{len(results)} RESULT(S)")
 
     def _on_double_click(self, event):
         sel = self._tv.selection()
@@ -850,7 +850,7 @@ class ICTApp(ctk.CTk):
 
     def _nav_tabs(self):
         tabs = ctk.CTkFrame(self, fg_color=S1, corner_radius=0,
-                             border_width=1, border_color=BD, height=40)
+                             border_width=2, border_color=BD, height=58)
         tabs.pack(fill="x"); tabs.pack_propagate(False)
 
         self._pages = {}
@@ -870,9 +870,9 @@ class ICTApp(ctk.CTk):
                             ("reports",  "📋  Reports"),
                             ("search",   "🔍  Search")]:
             btn = ctk.CTkButton(
-                tabs, text=label, width=0, height=38,
+                tabs, text=label, width=1, height=54,
                 fg_color="transparent", hover_color=S2,
-                border_width=0, font=("Segoe UI",11),
+                border_width=0, font=("Segoe UI",14),
                 text_color=MUT, corner_radius=0,
                 command=lambda k=key: self._show_page(k))
             btn.pack(side="left", padx=2)
@@ -890,7 +890,7 @@ class ICTApp(ctk.CTk):
         ctk.CTkLabel(hdr, text="  ALL REPORTS",
                      font=("Segoe UI",11,"bold"), text_color=INFO).pack(side="left",padx=14)
         self._reports_count = ctk.CTkLabel(hdr, text="",
-                                            font=("Segoe UI",9), text_color=MUT)
+                                            font=("Segoe UI",18), text_color=MUT)
         self._reports_count.pack(side="right", padx=14)
         ctk.CTkButton(hdr, text="↻  Refresh", width=90, height=30,
                        fg_color=S3, hover_color=S1, border_color=BD, border_width=1,
@@ -1070,7 +1070,7 @@ class ICTApp(ctk.CTk):
     def _update_file_count(self):
         try:
             self._file_count = len(self.db.get_processed_files())
-            self._wbar.set_status(f"{self._file_count} files processed", MUT)
+            self._wbar.set_status(f"{self._file_count} Files Processed", MUT)
         except Exception:
             pass
 
@@ -1262,7 +1262,7 @@ class ICTApp(ctk.CTk):
                 f"{r['pass_rate']:.1f}%", r["status"],
                 r.get("report_folder","—")),
                 tags=(tag,))
-        self._reports_count.configure(text=f"{len(runs)} report(s)")
+        self._reports_count.configure(text=f"{len(runs)} REPORT(S)")
 
     def _rep_select(self, event):
         """Single-click: load run data so Save PDF / Export XLSX work."""
