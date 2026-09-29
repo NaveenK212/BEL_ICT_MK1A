@@ -1,0 +1,9 @@
+{
+  "watch_folder": "D:/1.INPROGRESS/1.BEL/9.BEL-ICT/BEL ICT GUI/BEL_ICT_MK1A/ICT_Reports",
+  "output_root": "D:\\1.INPROGRESS\\1.BEL\\9.BEL-ICT\\BEL ICT GUI\\BEL_ICT_MK1A\\ICT_Reports",
+  "auto_pdf": true,
+  "poll_interval": 2,
+  "admin_user": "admin",
+  "admin_pass": "bel@2026",
+  "theme": "dark_navy"
+}

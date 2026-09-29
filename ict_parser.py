@@ -34,34 +34,18 @@ class ICTParser:
         return self._parse_generic(raw, filepath)
 
     # ── KEYSIGHT / AGILENT ICT ────────────────────────────────────
+    #  Board result : @BTEST field 3  ->  "00" = PASS, anything else = FAIL
+    #  Each @BLOCK  : may hold several @A-xxx measurement lines; every
+    #                 measurement becomes its own component row.
+    #  A block ends only when the next @BLOCK starts (the tester interleaves
+    #  @D-T / @TJET lines, each closed by "}", inside a block).
     def _parse_keysight(self, raw: str, filepath: str) -> dict:
-        lines      = raw.splitlines()
         meta       = {}
-        components = []
-        
         parse_log  = []
+        blocks     = []
+        blk        = None
 
-        cur_ref     = None
-        cur_status  = None
-        cur_meas    = None
-        cur_nominal = None
-        cur_upper   = None
-        cur_lower   = None
-
-        def flush():
-            nonlocal cur_ref
-            if cur_ref is None:
-                return
-            c = self._make_comp(cur_ref, cur_status, cur_meas,
-                                cur_nominal, cur_upper, cur_lower)
-            components.append(c)
-            if c["status"] == "FAIL":
-                parse_log.append(
-                    f"  → {c['ref']}: FAIL  "
-                    f"[meas={c['measured']}  nom={c['nominal']}]")
-            cur_ref = None
-
-        for line in lines:
+        for line in raw.splitlines():
             line = line.strip()
             if not line:
                 continue
@@ -72,72 +56,89 @@ class ICTParser:
                 if len(parts) > 1 and parts[1].strip():
                     meta["board_name"] = parts[1].strip()
 
-            # Serial from @BTEST line
+            # Serial + overall board result from @BTEST line
             elif "@BTEST" in line:
                 parts = line.lstrip("{").split("|")
                 if len(parts) > 1 and parts[1].strip():
                     meta["serial_raw"] = parts[1].strip()
                     meta["serial"] = self._clean_serial(
                         parts[1].strip(), meta.get("board_name", ""))
+                if len(parts) > 2:
+                    code = parts[2].strip(" }")
+                    if code != "00":
+                        meta["board_fail"] = True
+                        meta["board_code"] = code
+                    meta.setdefault("board_code", code)
 
             # Block start
             elif "@BLOCK" in line:
-                flush()
                 parts = line.lstrip("{").split("|")
-                ref_raw    = parts[1].strip() if len(parts) > 1 else "?"
-                # Clean ref: "k1%unp%jp1-4" → "K1"
-                cur_ref    = ref_raw.split("%")[0].upper()
-                raw_st     = parts[2].strip(" }") if len(parts) > 2 else "00"
-                cur_status = "PASS" if raw_st == "00" else "FAIL"
-                cur_meas    = None
-                cur_nominal = None
-                cur_upper   = None
-                cur_lower   = None
+                ref_raw = parts[1].strip() if len(parts) > 1 else "?"
+                code    = parts[2].strip(" }") if len(parts) > 2 else "00"
+                base, _, tag = ref_raw.partition("%")   # "k1%unp%jp1" -> K1
+                blk = {"base": base.upper(), "tag": tag.replace("%", " "),
+                       "tester_fail": code != "00", "meas": []}
+                blocks.append(blk)
 
-            # Measurement line — handle ALL Agilent measurement types
-            elif "@A-" in line:
-                m = re.search(r'\|\s*([+-]?[\d.Ee+\-]+)\s*\{', line)
+            # Any Agilent measurement line (CAP RES JUM DIO ZEN NFE PFE MEA ...)
+            elif "@A-" in line and blk is not None:
+                m = self._parse_measurement(line)
                 if m:
-                    try: cur_meas = float(m.group(1))
-                    except Exception: pass
+                    blk["meas"].append(m)
 
-                # @LIM3: nominal|upper|lower
-                m3 = re.search(r'@LIM3\|([+-]?[\d.Ee+\-]+)\|([+-]?[\d.Ee+\-]+)\|([+-]?[\d.Ee+\-]+)', line)
-                if m3:
-                    try:
-                        cur_nominal = float(m3.group(1))
-                        cur_upper   = float(m3.group(2))
-                        cur_lower   = float(m3.group(3))
-                    except Exception:
-                        pass
+        # ── turn blocks into component rows ──────────────────────
+        entries = []
+        for b in blocks:
+            oks     = [self._in_limits(m["meas"], m["upper"], m["lower"])
+                       for m in b["meas"]]
+            any_out = any(ok is False for ok in oks)
+            for m, ok in zip(b["meas"], oks):
+                if ok is False:
+                    status, note = "FAIL", "Out of tolerance"
+                elif b["tester_fail"] and not any_out:
+                    status, note = "FAIL", "Flagged FAIL by tester"
                 else:
-                    # @LIM2: upper|lower
-                    m2 = re.search(r'@LIM2\|([+-]?[\d.Ee+\-]+)\|([+-]?[\d.Ee+\-]+)', line)
-                    if m2:
-                        try:
-                            cur_upper = float(m2.group(1))
-                            cur_lower = float(m2.group(2))
-                        except Exception:
-                            pass
+                    status, note = "PASS", ""
+                entries.append((b, m, status, note))
+            if not b["meas"] and b["tester_fail"]:
+                entries.append((b, None, "FAIL", "Flagged FAIL by tester"))
 
-                # Re-evaluate pass/fail from actual values
-                if cur_meas is not None and cur_upper is not None and cur_lower is not None:
-                    lo = min(cur_upper, cur_lower)
-                    hi = max(cur_upper, cur_lower)
-                    # Ignore extreme limits (sentinel values like 9.999999E+99)
-                    if hi < 1e90 and lo > -1e90:
-                        cur_status = "PASS" if lo <= cur_meas <= hi else "FAIL"
-
-            # Block close
-            elif line == "}" and cur_ref is not None:
-                flush()
-
-        flush()  # final block
+        # ── unique, readable refs (only when a ref repeats) ──────
+        from collections import Counter
+        counts = Counter(b["base"] for b, _, _, _ in entries)
+        used   = Counter()
+        components = []
+        for b, m, status, note in entries:
+            ref = b["base"]
+            if counts[ref] > 1:
+                bits = [t for t in (b["tag"], m["label"] if m else "") if t]
+                if bits:
+                    ref = f"{ref} ({' / '.join(bits)})"
+            used[ref] += 1
+            if used[ref] > 1:
+                ref = f"{ref} #{used[ref]}"
+            if m:
+                c = self._make_comp(ref, status, m["meas"], m["nominal"],
+                                    m["upper"], m["lower"], note=note,
+                                    ctype=self._infer_type(b["base"]))
+            else:
+                c = self._make_comp(ref, status, None, None, None, None,
+                                    note=note,
+                                    ctype=self._infer_type(b["base"]))
+            components.append(c)
+            if status == "FAIL":
+                parse_log.append(
+                    f"  → {c['ref']}: FAIL  "
+                    f"[meas={c['measured']}  nom={c['nominal']}]  {note}")
 
         if not components:
             raise ValueError(
                 f"File parsed as Keysight ICT but no @BLOCK components found.\n"
                 f"File: {os.path.basename(filepath)}")
+
+        if meta.get("board_fail"):
+            parse_log.insert(0, f"  → BOARD: tester result code "
+                                f"{meta['board_code']} (FAIL)")
 
         meta.setdefault("board_name",
                         os.path.splitext(os.path.basename(filepath))[0])
@@ -146,6 +147,49 @@ class ICTParser:
 
         return self._build(meta, components,
                            parse_log, filepath, "Keysight ICT")
+
+    def _parse_measurement(self, line: str):
+        """Parse one @A-xxx line, with or without a text label.
+        {@A-MEA|0|+2.97E+00|FET_OFF{@LIM2|+3.5E+00|+1.5E+00}}"""
+        body    = line.lstrip("{")
+        lim_idx = body.find("@LIM")
+        head    = body[:lim_idx] if lim_idx >= 0 else body
+        parts   = head.rstrip("{} ").split("|")
+        if len(parts) < 3:
+            return None
+        try:
+            meas = float(parts[2])
+        except ValueError:
+            return None
+        label = parts[3].strip() if len(parts) > 3 else ""
+        nominal = upper = lower = None
+        if lim_idx >= 0:
+            lp = body[lim_idx:].rstrip("} ").split("|")
+            try:
+                if lp[0] == "@LIM3" and len(lp) >= 4:
+                    nominal, upper, lower = (float(x) for x in lp[1:4])
+                elif lp[0] == "@LIM2" and len(lp) >= 3:
+                    upper, lower = (float(x) for x in lp[1:3])
+            except ValueError:
+                pass
+        return {"meas": meas, "label": label,
+                "nominal": nominal, "upper": upper, "lower": lower}
+
+    @staticmethod
+    def _in_limits(meas, upper, lower):
+        """True / False, or None when there are no usable limits.
+        A 9.999999E+99 limit means 'no limit on that side'."""
+        vals = [v for v in (upper, lower) if v is not None]
+        if len(vals) < 2:
+            return None
+        lo, hi = min(vals), max(vals)
+        if lo <= -1e90: lo = None
+        if hi >=  1e90: hi = None
+        if lo is None and hi is None:
+            return None
+        if lo is not None and meas < lo: return False
+        if hi is not None and meas > hi: return False
+        return True
 
     # ── CSV ───────────────────────────────────────────────────────
     def _parse_csv(self, filepath: str) -> dict:
@@ -258,6 +302,7 @@ class ICTParser:
 
     def _infer_type(self, ref: str) -> str:
         r = ref.lower()
+        if r.startswith("cr"): return "Diode"
         if r.startswith("r"):  return "Resistor"
         if r.startswith("c"):  return "Capacitor"
         if r.startswith("l"):  return "Inductor"
@@ -268,8 +313,9 @@ class ICTParser:
         if r[0] in ("j","p","k","e"): return "Connector"
         return "Component"
 
-    def _make_comp(self, ref, status, meas, nominal_val, upper, lower):
-        ctype = self._infer_type(ref)
+    def _make_comp(self, ref, status, meas, nominal_val, upper, lower,
+                   note=None, ctype=None):
+        ctype = ctype or self._infer_type(ref)
         nominal = "—"; dev = "—"
 
         # Use actual nominal from @LIM3 if available
@@ -294,7 +340,8 @@ class ICTParser:
             "measured": self._fmt(meas) if meas is not None else "—",
             "deviation": dev,
             "status": status,
-            "note": "Out of tolerance" if status == "FAIL" else "",
+            "note": note if note is not None else
+                    ("Out of tolerance" if status == "FAIL" else ""),
         }
 
     def _calc_dev(self, nom, meas):
@@ -349,6 +396,12 @@ class ICTParser:
         if failed > 0:
             insights.append(
                 f"WARNING: {failed} component(s) failed — board requires rework")
+        if meta.get("board_fail") and failed == 0:
+            insights.append(
+                f"WARNING: Tester marked this board FAIL "
+                f"(@BTEST code {meta.get('board_code')}) but no measurement is "
+                f"out of limits — check digital / testjet results or an "
+                f"aborted run")
         if rate < 98:
             insights.append(
                 f"WARNING: Pass rate {rate:.1f}% is below 98% threshold")
@@ -363,7 +416,8 @@ class ICTParser:
                 "passed":     passed,
                 "failed":     failed,
                 "pass_rate":  rate,
-                "status":     "PASS" if failed == 0 else "FAIL",
+                "status":     ("FAIL" if failed > 0 or meta.get("board_fail")
+                               else "PASS"),
                 "test_time":  datetime.datetime.now().strftime("%H:%M:%S"),
                 "timestamp":  datetime.datetime.now().isoformat(),
             },

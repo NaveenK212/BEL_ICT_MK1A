@@ -9,7 +9,6 @@ import numpy as np
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import matplotlib.pyplot as plt
-
 from themes import get_theme
 from config import Config as _Cfg
 _T = get_theme(_Cfg().get("theme", "dark_navy"))
