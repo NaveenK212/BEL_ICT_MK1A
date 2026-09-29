@@ -1,7 +1,7 @@
 """
 Advanced Analytics Window — unique deep-dive charts not on the main dashboard.
 Charts: Pass Rate Distribution, Deviation Box Plot, Cumulative Yield,
-        Repeat Failures, Volume vs Quality Bubble, Component Radar.
+        Volume vs Quality Bubble, Component Radar.
 """
 import customtkinter as ctk
 import tkinter as tk
@@ -9,6 +9,7 @@ import numpy as np
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import matplotlib.pyplot as plt
+
 from themes import get_theme
 from config import Config as _Cfg
 _T = get_theme(_Cfg().get("theme", "dark_navy"))
@@ -97,20 +98,18 @@ class AnalyticsWindow(ctk.CTkToplevel):
         rates       = self.db.get_pass_rate_histogram()
         dev_by_type = self.db.get_deviation_by_type()
         trend       = self.db.get_pass_rate_trend(board_name=board, limit=50)
-        repeats     = self.db.get_repeat_failures()
         board_cmp   = self.db.get_board_comparison()
         comp_type   = self.db.get_component_type_failures()
 
-        self._render_kpis(runs, rates, repeats)
+        self._render_kpis(runs, rates)
         self._chart_pass_rate_dist(rates)
         self._chart_deviation_box(dev_by_type)
         self._chart_cumulative_yield(trend)
-        self._chart_repeat_failures(repeats)
         self._chart_volume_vs_quality(board_cmp)
         self._chart_type_radar(comp_type)
 
     # ── KPIs ──────────────────────────────────────────────────────
-    def _render_kpis(self, runs, rates, repeats):
+    def _render_kpis(self, runs, rates):
         for w in self._kpi_frame.winfo_children(): w.destroy()
         if not runs:
             ctk.CTkLabel(self._kpi_frame, text="No data available.",
@@ -129,7 +128,6 @@ class AnalyticsWindow(ctk.CTkToplevel):
             ("Std Dev",        f"{std_dev:.2f}",       PASS if std_dev < 2 else WARN if std_dev < 5 else FAIL),
             ("Consistency",    f"{consistency:.0f}%",   PASS if consistency >= 80 else WARN),
             ("Below 98%",      f"{below_98}/{len(rates)}", FAIL if below_98 > 0 else PASS),
-            ("Repeat Fails",   str(len(repeats)),       FAIL if repeats else PASS),
             ("Sigma Level",    f"{sigma:.1f}\u03c3",    INFO),
         ]
         for label, val, color in kpis:
@@ -239,28 +237,6 @@ class AnalyticsWindow(ctk.CTkToplevel):
         ax.tick_params(colors=MUT); fig.tight_layout()
         self._embed(fig, 1, 0)
 
-    # ── CHART 4: Repeat Failures ──────────────────────────────────
-    def _chart_repeat_failures(self, repeats):
-        fig = Figure(figsize=(6, 3.2), dpi=90); fig.patch.set_facecolor(S2)
-        ax = fig.add_subplot(111); ax.set_facecolor(S3)
-        if repeats:
-            refs = [f"{r['ref']} ({r['type'] or '?'})" for r in repeats[:10]]
-            runs_c = [r["run_count"] for r in repeats[:10]]
-            total_f = [r["total_fails"] for r in repeats[:10]]
-            y = np.arange(len(refs))
-            ax.barh(y - 0.15, runs_c, height=0.3, color=WARN, alpha=0.85, label="Runs Affected")
-            ax.barh(y + 0.15, total_f, height=0.3, color=FAIL, alpha=0.85, label="Total Failures")
-            ax.set_yticks(y); ax.set_yticklabels(refs, fontsize=7, color=TXT)
-            ax.invert_yaxis()
-            ax.set_xlabel("Count", fontsize=9, color=MUT)
-            ax.legend(fontsize=7, framealpha=0); ax.grid(axis="x", alpha=0.3, color=BD)
-        else:
-            ax.text(0.5, 0.5, "No repeat failures detected\n(Good — no component fails across multiple runs)",
-                    ha="center", va="center", transform=ax.transAxes, color=PASS, fontsize=10)
-        ax.set_title("Repeat Failure Offenders (Multi-Run)", fontsize=11, color=TXT, pad=8)
-        ax.tick_params(colors=MUT); fig.tight_layout()
-        self._embed(fig, 1, 1)
-
     # ── CHART 5: Volume vs Quality ────────────────────────────────
     def _chart_volume_vs_quality(self, board_cmp):
         fig = Figure(figsize=(6, 3.2), dpi=90); fig.patch.set_facecolor(S2)
@@ -286,7 +262,7 @@ class AnalyticsWindow(ctk.CTkToplevel):
                     transform=ax.transAxes, color=MUT, fontsize=10)
         ax.set_title("Volume vs Quality (bubble = failures)", fontsize=11, color=TXT, pad=8)
         ax.tick_params(colors=MUT); fig.tight_layout()
-        self._embed(fig, 2, 0)
+        self._embed(fig, 1, 1)
 
     # ── CHART 6: Radar ────────────────────────────────────────────
     def _chart_type_radar(self, comp_type):
@@ -317,7 +293,7 @@ class AnalyticsWindow(ctk.CTkToplevel):
                     ha="center", va="center", transform=ax.transAxes, color=MUT, fontsize=10)
         ax.set_title("Component Quality Radar", fontsize=11, color=TXT, pad=16)
         fig.tight_layout()
-        self._embed(fig, 2, 1)
+        self._embed(fig, 2, 0)
 
     def _close(self):
         plt.close("all")

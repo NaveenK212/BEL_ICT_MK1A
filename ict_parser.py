@@ -53,8 +53,12 @@ class ICTParser:
             # Board name from @BATCH line
             if "@BATCH" in line and "board_name" not in meta:
                 parts = line.lstrip("{").split("|")
-                if len(parts) > 1 and parts[1].strip():
-                    meta["board_name"] = parts[1].strip()
+                # Board name: field 10 (after the fixture id) if present,
+                # otherwise field 1 (right after @BATCH).
+                name10 = parts[10].strip() if len(parts) > 10 else ""
+                name1  = parts[1].strip()  if len(parts) > 1  else ""
+                if name10 or name1:
+                    meta["board_name"] = name10 or name1
 
             # Serial + overall board result from @BTEST line
             elif "@BTEST" in line:
