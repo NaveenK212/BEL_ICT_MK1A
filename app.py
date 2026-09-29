@@ -1,5 +1,5 @@
 """
-ICT Report Analyzer  v7.0
+ICT Report Analyzer  v8.0
 Auto-watch folder · Dashboard · Search · Reports
 """
 import os, datetime, threading, shutil, zipfile
@@ -19,24 +19,37 @@ from report_generator import ReportGenerator
 from analytics_window import AnalyticsWindow
 from file_watcher   import FileWatcher
 from config         import Config
+from themes         import THEMES, THEME_NAMES, get_theme
 
-ctk.set_appearance_mode("dark")
+# ── Load theme from config ────────────────────────────────────────
+_cfg_boot = Config()
+_T = get_theme(_cfg_boot.get("theme", "dark_navy"))
+
+ctk.set_appearance_mode(_T["ctk_mode"])
 ctk.set_default_color_theme("blue")
 
-# ── Colours — BEL / Tejas Defence Avionics ────────────────────────
-BG  = "#0a1929"; S1 = "#0d2137"; S2 = "#112a45"; S3 = "#163354"
-BD  = "#1e4976"; BD2= "#2a5f8f"; TXT= "#e3edf7"; MUT= "#6e96bf"
-DIM = "#3d6a96"; PASS="#00e676"; FAIL="#ff1744"; WARN="#ffab00"
-INFO= "#00bcd4"; PUR = "#7c4dff"
-PBG = "#0a3320"; FBG = "#3d0a14"; WBG = "#3d2e00"; IBG = "#003545"
+BG  = _T["bg"];  S1  = _T["s1"];  S2  = _T["s2"];  S3  = _T["s3"]
+BD  = _T["bd"];  BD2 = _T["bd2"]; TXT = _T["txt"]; MUT = _T["mut"]
+DIM = _T["dim"]; PASS= _T["pass"];FAIL= _T["fail"];WARN= _T["warn"]
+INFO= _T["info"];PUR = _T["pur"]
+PBG = _T["pbg"]; FBG = _T["fbg"]; WBG = _T["wbg"]; IBG = _T["ibg"]
 
-plt.rcParams.update({
-    "figure.facecolor":S2,"axes.facecolor":S3,"axes.edgecolor":BD,
-    "axes.labelcolor":MUT,"xtick.color":MUT,"ytick.color":MUT,
-    "text.color":TXT,"grid.color":BD,"grid.linestyle":"--","grid.alpha":.45,
-    "font.family":"monospace","font.size":10,
-    "axes.spines.top":False,"axes.spines.right":False,
-})
+def _apply_mpl_theme():
+    plt.rcParams.update({
+        "figure.facecolor":S2,"axes.facecolor":S3,"axes.edgecolor":BD,
+        "axes.labelcolor":MUT,"xtick.color":MUT,"ytick.color":MUT,
+        "text.color":TXT,"grid.color":BD,"grid.linestyle":"--","grid.alpha":.45,
+        "font.family":"monospace","font.size":10,
+        "axes.spines.top":False,"axes.spines.right":False,
+    })
+_apply_mpl_theme()
+
+CHART_RC = {
+    "figure.facecolor": S2, "axes.facecolor": S3,
+    "axes.edgecolor": BD, "axes.labelcolor": MUT,
+    "xtick.color": MUT, "ytick.color": MUT,
+    "text.color": TXT, "grid.color": BD,
+}
 
 
 # ── CHART POPUP ───────────────────────────────────────────────────
@@ -154,9 +167,6 @@ class TablesPanel(ctk.CTkFrame):
         self.tv_fail  = self._tab("Failed Components",
             ["Ref","Type","Nominal","Measured","Deviation","Limit","Note"],
             [100,130,140,140,120,120,300])
-        self.tv_power = self._tab("Power Supply",
-            ["Rail","Nominal","Measured","Deviation","Ripple","Status"],
-            [110,150,150,130,130,110])
 
     def _tab(self, name, cols, widths):
         tab = self.tabs.add(name)
@@ -175,7 +185,7 @@ class TablesPanel(ctk.CTkFrame):
         return tv
 
     def _clear(self):
-        for tv in (self.tv_comp, self.tv_fail, self.tv_power):
+        for tv in (self.tv_comp, self.tv_fail):
             for r in tv.get_children(): tv.delete(r)
 
     def populate(self, data):
@@ -190,210 +200,383 @@ class TablesPanel(ctk.CTkFrame):
                 c["ref"],c["type"],c.get("nominal","—"),c.get("measured","—"),
                 c.get("deviation","—"),c.get("limit","—"),c.get("note","—")),
                 tags=("fail",))
-        for p in data.get("power_rails",[]):
-            self.tv_power.insert("","end", values=(
-                p["rail"],p["nominal"],p["measured"],
-                p.get("deviation","—"),p.get("ripple","—"),p["status"]),
-                tags=("pass" if p["status"]=="PASS" else "fail",))
 
 
 # ── DASHBOARD PAGE ────────────────────────────────────────────────
 class DashboardPage(ctk.CTkScrollableFrame):
     def __init__(self, parent, db, open_chart_fn, **kw):
-        super().__init__(parent, fg_color=BG, scrollbar_button_color=BD, **kw)
+        super().__init__(parent, fg_color=BG, corner_radius=0, **kw)
         self.db = db
         self._open_chart = open_chart_fn
         self._canvases   = []
         self._build()
 
     def _build(self):
-        # Section header
-        hdr = ctk.CTkFrame(self, fg_color="transparent")
-        hdr.pack(fill="x", padx=16, pady=(16,4))
-        ctk.CTkLabel(hdr, text="DASHBOARD", font=("Segoe UI",11,"bold"),
+        # Header bar
+        hdr = ctk.CTkFrame(self, fg_color="transparent", height=30)
+        hdr.pack(fill="x", padx=10, pady=(6,2))
+        hdr.pack_propagate(False)
+        ctk.CTkLabel(hdr, text="DASHBOARD", font=("Segoe UI",10,"bold"),
                      text_color=INFO).pack(side="left")
         self._refresh_btn = ctk.CTkButton(
-            hdr, text="↻  Refresh", width=90, height=28,
+            hdr, text="↻  Refresh", width=80, height=24,
             fg_color=S3, hover_color=S1, border_color=BD, border_width=1,
-            font=("Segoe UI",10), text_color=MUT,
+            font=("Segoe UI",9), text_color=MUT,
             command=self.refresh)
         self._refresh_btn.pack(side="right")
 
-        # KPI cards row
-        self._kpi_frame = ctk.CTkFrame(self, fg_color="transparent")
-        self._kpi_frame.pack(fill="x", padx=16, pady=(0,8))
+        # KPI cards — single row, compact
+        self._kpi_frame = ctk.CTkFrame(self, fg_color="transparent", height=70)
+        self._kpi_frame.pack(fill="x", padx=10, pady=(0,2))
+        self._kpi_frame.pack_propagate(False)
 
-        # Charts grid (2 columns)
+        # Charts grid (2 columns x 3 rows) — fills the screen
         self._chart_frame = ctk.CTkFrame(self, fg_color="transparent")
-        self._chart_frame.pack(fill="both", expand=True, padx=16, pady=4)
+        self._chart_frame.pack(fill="both", expand=True, padx=10, pady=(2,6))
         self._chart_frame.columnconfigure(0, weight=1)
         self._chart_frame.columnconfigure(1, weight=1)
-
-        # Recent runs table
-        ctk.CTkLabel(self, text="  RECENT RUNS",
-                     font=("Segoe UI",9,"bold"), text_color=MUT,
-                     anchor="w").pack(fill="x", padx=16, pady=(8,2))
-        self._runs_frame = ctk.CTkFrame(self, fg_color=S2, corner_radius=6,
-                                         border_width=1, border_color=BD)
-        self._runs_frame.pack(fill="x", padx=16, pady=(0,16))
-        self._build_runs_table()
+        for r in range(3):
+            self._chart_frame.rowconfigure(r, weight=1)
 
         self.refresh()
 
-    def _build_runs_table(self):
-        _init_ttk_theme()
-        s = ttk.Style()
-        s.configure("Dash.Treeview", background=S3, fieldbackground=S3,
-                    foreground=TXT, rowheight=32, font=("Segoe UI",12))
-        s.configure("Dash.Treeview.Heading", background=S2, foreground=INFO,
-                    font=("Segoe UI",11,"bold"), relief="flat")
-        s.map("Dash.Treeview", background=[("selected",S1)])
-        s.layout("Dash.Treeview",[("Dash.Treeview.treearea",{"sticky":"nswe"})])
-        cols = ("Board","Serial","Date","Components","Pass","Fail","Rate","Status")
-        f = tk.Frame(self._runs_frame, bg=BG, height=220)
-        f.pack(fill="x", padx=8, pady=8); f.pack_propagate(False)
-        sby = ttk.Scrollbar(f, orient="vertical")
-        self._runs_tv = ttk.Treeview(f, columns=cols, show="headings",
-                                      style="Dash.Treeview", yscrollcommand=sby.set,
-                                      height=7)
-        sby.config(command=self._runs_tv.yview)
-        sby.pack(side="right", fill="y"); self._runs_tv.pack(fill="both", expand=True)
-        for col, w in zip(cols,[180,160,140,100,70,60,80,80]):
-            self._runs_tv.heading(col, text=col)
-            self._runs_tv.column(col, width=w, anchor="w", minwidth=50)
-        self._runs_tv.tag_configure("pass", foreground=PASS)
-        self._runs_tv.tag_configure("fail", foreground=FAIL)
-
     def refresh(self):
-        stats = self.db.get_dashboard_stats()
-        trend = self.db.get_pass_rate_trend(limit=20)
+        stats     = self.db.get_dashboard_stats()
+        trend     = self.db.get_pass_rate_trend(limit=30)
         board_cmp = self.db.get_board_comparison()
         fail_freq = self.db.get_failure_frequency()
+        comp_type = self.db.get_component_type_failures()
+        daily     = self.db.get_daily_throughput()
+        board_pf  = self.db.get_board_pass_fail_counts()
+        devs      = self.db.get_deviation_distribution()
+        fail_tl   = self.db.get_failure_timeline()
 
         self._render_kpis(stats)
-        self._render_charts(stats, trend, board_cmp, fail_freq)
-        self._render_recent(stats["recent"])
+        self._render_charts(stats, trend, board_cmp, fail_freq,
+                            comp_type, daily, board_pf, devs, fail_tl)
 
     def _render_kpis(self, s):
         for w in self._kpi_frame.winfo_children(): w.destroy()
         ar = s["avg_rate"]
+        fpy = s["fpy"]
+
         kpis = [
-            ("Total Runs",     str(s["total_runs"]),  INFO,  "processed"),
-            ("Boards",         str(s["boards"]),       TXT,   "unique"),
-            ("Pass Runs",      str(s["pass_runs"]),    PASS,  "boards passed"),
-            ("Fail Runs",      str(s["fail_runs"]),    FAIL if s["fail_runs"]>0 else MUT, "boards failed"),
-            ("Avg Pass Rate",  f"{ar:.1f}%",           PASS if ar>=98 else WARN if ar>=90 else FAIL, "across all runs"),
-            ("Total Comps",    str(s["total_comp"]),   TXT,   "tested"),
-            ("Total Failures", str(s["total_fail_comp"]), FAIL if s["total_fail_comp"]>0 else PASS, "components"),
+            ("Runs",       str(s["total_runs"]),     INFO),
+            ("Boards",     str(s["boards"]),          TXT),
+            ("Pass",       str(s["pass_runs"]),       PASS),
+            ("Fail",       str(s["fail_runs"]),       FAIL if s["fail_runs"]>0 else MUT),
+            ("Avg Rate",   f"{ar:.1f}%",              PASS if ar>=98 else WARN if ar>=90 else FAIL),
+            ("FPY",        f"{fpy:.1f}%",             PASS if fpy>=90 else WARN if fpy>=75 else FAIL),
+            ("Components", str(s["total_comp"]),      TXT),
+            ("Failed",     str(s["total_fail_comp"]), FAIL if s["total_fail_comp"]>0 else PASS),
+            ("Best Rate",  f"{s['max_rate']:.1f}%",   PASS),
+            ("Worst Rate", f"{s['min_rate']:.1f}%",   FAIL if s["min_rate"]<95 else WARN),
         ]
-        for label, val, color, sub in kpis:
-            c = KPICard(self._kpi_frame, label, val, color, sub, width=175)
-            c.pack(side="left", padx=(0,10), fill="y")
+        for label, val, color in kpis:
+            card = ctk.CTkFrame(self._kpi_frame, fg_color=S2, corner_radius=6,
+                                 border_width=1, border_color=BD)
+            card.pack(side="left", padx=2, fill="both", expand=True)
+            ctk.CTkLabel(card, text=label, font=("Segoe UI",8,"bold"),
+                         text_color=MUT).pack(pady=(4,0))
+            ctk.CTkLabel(card, text=str(val), font=("Segoe UI",14,"bold"),
+                         text_color=color).pack(pady=(0,4))
 
     def _embed_chart(self, fig, row, col, title):
-        card = ctk.CTkFrame(self._chart_frame, fg_color=S2, corner_radius=6,
+        card = ctk.CTkFrame(self._chart_frame, fg_color=S2, corner_radius=4,
                              border_width=1, border_color=BD)
-        card.grid(row=row, column=col, padx=6, pady=6, sticky="nsew")
-        ctk.CTkLabel(card, text=f"  {title}",
-                     font=("Segoe UI",9,"bold"), text_color=MUT,
-                     anchor="w").pack(fill="x", pady=(8,2), padx=4)
+        card.grid(row=row, column=col, padx=3, pady=3, sticky="nsew")
         canvas = FigureCanvasTkAgg(fig, master=card)
         canvas.draw()
-        canvas.get_tk_widget().pack(fill="both", expand=True, padx=6, pady=(0,8))
+        canvas.get_tk_widget().pack(fill="both", expand=True, padx=2, pady=2)
         self._canvases.append(canvas)
 
-    def _render_charts(self, stats, trend, board_cmp, fail_freq):
+    def _render_charts(self, stats, trend, board_cmp, fail_freq,
+                       comp_type, daily, board_pf, devs, fail_tl):
         for w in self._chart_frame.winfo_children(): w.destroy()
         for c in self._canvases: plt.close("all")
         self._canvases = []
 
         if stats["total_runs"] == 0:
             ctk.CTkLabel(self._chart_frame,
-                         text="No data yet — generate some reports to see charts here.",
+                         text="No data yet — select a watch folder and drop ICT files to see analytics.",
                          font=("Segoe UI",12), text_color=MUT).grid(
                 row=0, column=0, columnspan=2, pady=40)
             return
 
-        # Chart 1: Pass rate trend
-        fig1, ax1 = plt.subplots(figsize=(6,3)); fig1.patch.set_facecolor(S2)
+        FSIZE = (6, 3)
+
+        # ── Chart 1: Pass Rate Trend ──────────────────────────────
+        fig1, ax1 = plt.subplots(figsize=FSIZE)
+        fig1.patch.set_facecolor(S2); ax1.set_facecolor(S3)
         if trend:
             xs  = range(len(trend))
             rts = [r["pass_rate"] for r in trend]
-            ax1.fill_between(xs, rts, alpha=0.15, color=PUR)
-            ax1.plot(xs, rts, color=PUR, linewidth=2, marker="o",
-                     markersize=5, markerfacecolor=PUR)
+            ax1.fill_between(xs, rts, alpha=0.15, color=INFO)
+            ax1.plot(xs, rts, color=INFO, linewidth=2, marker="o",
+                     markersize=5, markerfacecolor=INFO)
             for i,(x,r) in enumerate(zip(xs,rts)):
-                ax1.plot(x, r, "o", color=PASS if r>=98 else FAIL, markersize=6, zorder=5)
-            ax1.axhline(98, color=WARN, linewidth=1, linestyle="--", alpha=0.7)
+                ax1.plot(x, r, "o", color=PASS if r>=98 else WARN if r>=90 else FAIL,
+                         markersize=6, zorder=5)
+            ax1.axhline(98, color=WARN, linewidth=1, linestyle="--", alpha=0.7, label="98% target")
             lbs = [r["timestamp"][:10] for r in trend]
             step = max(1, len(lbs)//6)
             ax1.set_xticks(list(xs)[::step])
-            ax1.set_xticklabels(lbs[::step], rotation=30, ha="right", fontsize=7)
-            ax1.set_ylabel("Pass Rate (%)", fontsize=8)
+            ax1.set_xticklabels(lbs[::step], rotation=30, ha="right", fontsize=7, color=MUT)
+            ax1.set_ylabel("Pass Rate (%)", fontsize=8, color=MUT)
             ax1.set_ylim(max(0,min(rts)-5), 103)
-            ax1.grid(True)
+            ax1.legend(fontsize=7, framealpha=0)
+            ax1.grid(True, alpha=0.3, color=BD)
         ax1.set_title("Pass Rate Trend", fontsize=10, color=TXT, pad=6)
+        ax1.tick_params(colors=MUT)
         fig1.tight_layout()
         self._embed_chart(fig1, 0, 0, "Pass Rate Trend")
 
-        # Chart 2: Board comparison
-        fig2, ax2 = plt.subplots(figsize=(6,3)); fig2.patch.set_facecolor(S2)
+        # ── Chart 2: Board Comparison (avg, min, max) ─────────────
+        fig2, ax2 = plt.subplots(figsize=FSIZE)
+        fig2.patch.set_facecolor(S2); ax2.set_facecolor(S3)
         if board_cmp:
-            names = [b["board_name"][:14] for b in board_cmp[:8]]
-            rates = [b["avg_rate"] for b in board_cmp[:8]]
-            clrs  = [PASS if r>=98 else WARN if r>=92 else FAIL for r in rates]
-            bars  = ax2.barh(names, rates, color=clrs, alpha=0.85, height=0.5)
+            names = [b["board_name"][:16] for b in board_cmp[:8]]
+            avgs  = [b["avg_rate"] for b in board_cmp[:8]]
+            mins  = [b["min_rate"] for b in board_cmp[:8]]
+            maxs  = [b["max_rate"] for b in board_cmp[:8]]
+            y = range(len(names))
+            for i in y:
+                ax2.plot([mins[i], maxs[i]], [i, i], color=DIM, linewidth=3, alpha=0.5, solid_capstyle="round")
+            clrs = [PASS if r>=98 else WARN if r>=92 else FAIL for r in avgs]
+            ax2.scatter(avgs, y, color=clrs, s=80, zorder=5, edgecolors="white", linewidth=0.5)
+            for i, a in enumerate(avgs):
+                ax2.text(a+0.8, i, f"{a:.1f}%", va="center", fontsize=8, color=MUT)
             ax2.axvline(98, color=WARN, linewidth=1, linestyle="--", alpha=0.7)
-            ax2.bar_label(bars, fmt="%.1f%%", padding=3, fontsize=8, color=MUT)
-            ax2.set_xlim(0,106); ax2.tick_params(labelsize=8)
-            ax2.grid(axis="x", alpha=0.3)
-        ax2.set_title("Board Avg Pass Rate", fontsize=10, color=TXT, pad=6)
+            ax2.set_yticks(list(y)); ax2.set_yticklabels(names, fontsize=8, color=TXT)
+            ax2.set_xlim(min(mins)-3 if mins else 0, 103)
+            ax2.grid(axis="x", alpha=0.3, color=BD)
+        ax2.set_title("Board Pass Rate (avg · min—max)", fontsize=10, color=TXT, pad=6)
+        ax2.tick_params(colors=MUT)
         fig2.tight_layout()
-        self._embed_chart(fig2, 0, 1, "Board Avg Pass Rate")
+        self._embed_chart(fig2, 0, 1, "Board Pass Rate Range")
 
-        # Chart 3: Run pass/fail donut
-        fig3, ax3 = plt.subplots(figsize=(6,3)); fig3.patch.set_facecolor(S2)
+        # ── Chart 3: Pass/Fail Donut ──────────────────────────────
+        fig3, ax3 = plt.subplots(figsize=FSIZE)
+        fig3.patch.set_facecolor(S2)
         p = stats["pass_runs"]; f = stats["fail_runs"]
         if p+f > 0:
             sizes = [p,f] if f>0 else [p]
             clrs  = [PASS,FAIL] if f>0 else [PASS]
-            ax3.pie(sizes, colors=clrs, startangle=90,
+            wedges, _ = ax3.pie(sizes, colors=clrs, startangle=90,
                     wedgeprops=dict(width=0.48, edgecolor=BG, linewidth=2))
             rt = round(p/(p+f)*100,1)
             ax3.text(0, 0.08, f"{rt}%", ha="center", va="center",
                      fontsize=18, fontweight="bold", color=TXT, fontfamily="monospace")
             ax3.text(0,-0.14, f"{p}P / {f}F", ha="center", va="center",
                      fontsize=9, color=MUT)
-        ax3.set_title("Board Run Overview", fontsize=10, color=TXT, pad=6)
+        ax3.set_title("Overall Pass/Fail", fontsize=10, color=TXT, pad=6)
         ax3.axis("equal"); fig3.tight_layout()
-        self._embed_chart(fig3, 1, 0, "Board Run Overview")
+        self._embed_chart(fig3, 1, 0, "Overall Pass/Fail")
 
-        # Chart 4: Top failing components
-        fig4, ax4 = plt.subplots(figsize=(6,3)); fig4.patch.set_facecolor(S2)
+        # ── Chart 4: Pareto — Top Failing Components ──────────────
+        fig4, ax4 = plt.subplots(figsize=FSIZE)
+        fig4.patch.set_facecolor(S2); ax4.set_facecolor(S3)
         if fail_freq:
-            names = [f["ref"] for f in fail_freq[:8]]
-            cnts  = [f["fail_count"] for f in fail_freq[:8]]
-            bars  = ax4.barh(names, cnts, color=FAIL, alpha=0.82, height=0.5)
+            names = [f["ref"] for f in fail_freq[:10]]
+            cnts  = [f["fail_count"] for f in fail_freq[:10]]
+            bars  = ax4.bar(range(len(names)), cnts, color=FAIL, alpha=0.82, width=0.6)
             ax4.bar_label(bars, padding=3, fontsize=8, color=MUT)
-            ax4.invert_yaxis(); ax4.tick_params(labelsize=8)
-            ax4.grid(axis="x", alpha=0.3)
+            total = sum(cnts)
+            if total > 0:
+                cum = []
+                s = 0
+                for c in cnts:
+                    s += c
+                    cum.append(s/total*100)
+                ax4b = ax4.twinx()
+                ax4b.plot(range(len(names)), cum, color=WARN, marker="D",
+                          markersize=4, linewidth=1.5)
+                ax4b.set_ylabel("Cumulative %", fontsize=7, color=WARN)
+                ax4b.set_ylim(0, 110)
+                ax4b.tick_params(colors=WARN, labelsize=7)
+                ax4b.spines["right"].set_color(WARN)
+            ax4.set_xticks(range(len(names)))
+            ax4.set_xticklabels(names, rotation=45, ha="right", fontsize=7)
+            ax4.grid(axis="y", alpha=0.3, color=BD)
         else:
             ax4.text(0.5,0.5,"No failures recorded", ha="center", va="center",
                      transform=ax4.transAxes, color=PASS, fontsize=11)
-        ax4.set_title("Top Failing Components", fontsize=10, color=TXT, pad=6)
+        ax4.set_title("Pareto — Top Failing Components", fontsize=10, color=TXT, pad=6)
+        ax4.tick_params(colors=MUT)
         fig4.tight_layout()
-        self._embed_chart(fig4, 1, 1, "Top Failing Components")
+        self._embed_chart(fig4, 1, 1, "Pareto — Failures")
 
-    def _render_recent(self, runs):
-        for r in self._runs_tv.get_children(): self._runs_tv.delete(r)
-        for r in runs:
-            tag = "pass" if r["status"]=="PASS" else "fail"
-            self._runs_tv.insert("","end", values=(
-                r["board_name"], r["serial"],
-                r["timestamp"][:16] if r["timestamp"] else "—",
-                r["total"], r["passed"], r["failed"],
-                f"{r['pass_rate']:.1f}%", r["status"]),
-                tags=(tag,))
+        # ── Chart 5: Component Type Breakdown ─────────────────────
+        fig5, ax5 = plt.subplots(figsize=FSIZE)
+        fig5.patch.set_facecolor(S2); ax5.set_facecolor(S3)
+        if comp_type:
+            types  = [c["type"] or "?" for c in comp_type]
+            totals = [c["total"] for c in comp_type]
+            fails  = [c["fails"] for c in comp_type]
+            passes = [t - f for t, f in zip(totals, fails)]
+            x = range(len(types))
+            ax5.bar(x, passes, color=PASS, alpha=0.8, label="Pass", width=0.6)
+            ax5.bar(x, fails, bottom=passes, color=FAIL, alpha=0.8, label="Fail", width=0.6)
+            for i in x:
+                if totals[i] > 0:
+                    fr = fails[i]/totals[i]*100
+                    ax5.text(i, totals[i]+0.3, f"{fr:.0f}%", ha="center",
+                             fontsize=7, color=FAIL if fr > 5 else MUT)
+            ax5.set_xticks(list(x))
+            ax5.set_xticklabels(types, fontsize=9, color=TXT)
+            ax5.legend(fontsize=7, framealpha=0)
+            ax5.grid(axis="y", alpha=0.3, color=BD)
+        ax5.set_title("Component Type Breakdown", fontsize=10, color=TXT, pad=6)
+        ax5.tick_params(colors=MUT)
+        fig5.tight_layout()
+        self._embed_chart(fig5, 2, 0, "Component Type Breakdown")
+
+        # ── Chart 6: Deviation Distribution (2σ) ──────────────────
+        fig6, ax6 = plt.subplots(figsize=FSIZE)
+        fig6.patch.set_facecolor(S2); ax6.set_facecolor(S3)
+        if devs and len(devs) > 2:
+            import numpy as np
+            d = np.array(devs)
+            # Aggressive clipping: use 10th-90th percentile with IQR extension
+            q1, q3 = np.percentile(d, [10, 90])
+            iqr = q3 - q1
+            if iqr < 0.5:
+                iqr = 5  # minimum spread for very tight distributions
+            lo_fence = q1 - 1.5 * iqr
+            hi_fence = q3 + 1.5 * iqr
+            d_clean = d[(d >= lo_fence) & (d <= hi_fence)]
+            if len(d_clean) < 3:
+                d_clean = d
+            n_bins = min(40, max(10, len(d_clean)//5))
+            n, bins, patches = ax6.hist(d_clean, bins=n_bins,
+                                         color=INFO, alpha=0.7, edgecolor=BD)
+            ax6.axvline(0, color=PASS, linewidth=1.5, linestyle="-", alpha=0.8, label="Nominal")
+            mean_d = np.mean(d_clean)
+            std_d  = np.std(d_clean)
+            if std_d > 0:
+                ax6.axvline(mean_d, color=WARN, linewidth=1, linestyle="--", alpha=0.8,
+                            label=f"μ={mean_d:.2f}%")
+                ax6.axvline(mean_d + 2*std_d, color=FAIL, linewidth=1, linestyle=":",
+                            alpha=0.6, label=f"±2σ={2*std_d:.2f}%")
+                ax6.axvline(mean_d - 2*std_d, color=FAIL, linewidth=1, linestyle=":",
+                            alpha=0.6)
+            outliers = len(d) - len(d_clean)
+            if outliers > 0:
+                ax6.text(0.98, 0.95, f"{outliers} outliers hidden",
+                         ha="right", va="top", transform=ax6.transAxes,
+                         fontsize=7, color=WARN, alpha=0.8)
+            ax6.set_xlabel("Deviation %", fontsize=8, color=MUT)
+            ax6.set_ylabel("Count", fontsize=8, color=MUT)
+            ax6.legend(fontsize=7, framealpha=0)
+            ax6.grid(axis="y", alpha=0.3, color=BD)
+        else:
+            ax6.text(0.5,0.5,"Insufficient deviation data", ha="center", va="center",
+                     transform=ax6.transAxes, color=MUT, fontsize=10)
+        ax6.set_title("Deviation Distribution (2σ bands)", fontsize=10, color=TXT, pad=6)
+        ax6.tick_params(colors=MUT)
+        fig6.tight_layout()
+        self._embed_chart(fig6, 2, 1, "Deviation Distribution")
+
+        # ── Chart 7: Daily Throughput ─────────────────────────────
+        fig7, ax7 = plt.subplots(figsize=FSIZE)
+        fig7.patch.set_facecolor(S2); ax7.set_facecolor(S3)
+        if daily:
+            days   = [d["day"][-5:] for d in daily]
+            passed = [d["passed"] for d in daily]
+            failed = [d["failed"] for d in daily]
+            x = range(len(days))
+            ax7.bar(x, passed, color=PASS, alpha=0.8, label="Pass", width=0.6)
+            ax7.bar(x, failed, bottom=passed, color=FAIL, alpha=0.8, label="Fail", width=0.6)
+            for i in x:
+                t = passed[i] + failed[i]
+                ax7.text(i, t + 0.2, str(t), ha="center", fontsize=8, color=TXT)
+            ax7.set_xticks(list(x))
+            ax7.set_xticklabels(days, fontsize=8, rotation=30, ha="right", color=MUT)
+            ax7.set_ylabel("Boards Tested", fontsize=8, color=MUT)
+            ax7.legend(fontsize=7, framealpha=0)
+            ax7.grid(axis="y", alpha=0.3, color=BD)
+        ax7.set_title("Daily Throughput", fontsize=10, color=TXT, pad=6)
+        ax7.tick_params(colors=MUT)
+        fig7.tight_layout()
+        self._embed_chart(fig7, 3, 0, "Daily Throughput")
+
+        # ── Chart 8: Board Pass/Fail Stacked ───────────────────────
+        fig8, ax8 = plt.subplots(figsize=FSIZE)
+        fig8.patch.set_facecolor(S2); ax8.set_facecolor(S3)
+        if board_pf:
+            bnames = [b["board_name"][:16] for b in board_pf]
+            pcount = [b["pass_count"] for b in board_pf]
+            fcount = [b["fail_count"] for b in board_pf]
+            y = range(len(bnames))
+            ax8.barh(y, pcount, color=PASS, alpha=0.8, label="Pass", height=0.5)
+            ax8.barh(y, fcount, left=pcount, color=FAIL, alpha=0.8, label="Fail", height=0.5)
+            for i in y:
+                t = pcount[i] + fcount[i]
+                ax8.text(t + 0.2, i, f"{pcount[i]}P/{fcount[i]}F",
+                         va="center", fontsize=7, color=MUT)
+            ax8.set_yticks(list(y))
+            ax8.set_yticklabels(bnames, fontsize=8, color=TXT)
+            ax8.legend(fontsize=7, framealpha=0, loc="lower right")
+            ax8.grid(axis="x", alpha=0.3, color=BD)
+        ax8.set_title("Board Run Results", fontsize=10, color=TXT, pad=6)
+        ax8.tick_params(colors=MUT)
+        fig8.tight_layout()
+        self._embed_chart(fig8, 3, 1, "Board Run Results")
+
+        # ── Chart 9: Failure Timeline (Cumulative) ────────────────
+        fig9, ax9 = plt.subplots(figsize=FSIZE)
+        fig9.patch.set_facecolor(S2); ax9.set_facecolor(S3)
+        if fail_tl:
+            days = [f["day"][-5:] for f in fail_tl]
+            daily_f = [f["fails"] for f in fail_tl]
+            cum_f   = [f["cumulative"] for f in fail_tl]
+            x = range(len(days))
+            ax9.bar(x, daily_f, color=FAIL, alpha=0.5, width=0.6, label="Daily Fails")
+            ax9b = ax9.twinx()
+            ax9b.plot(list(x), cum_f, color=WARN, marker="o", markersize=4,
+                      linewidth=2, label="Cumulative")
+            ax9b.set_ylabel("Cumulative", fontsize=8, color=WARN)
+            ax9b.tick_params(colors=WARN, labelsize=7)
+            step = max(1, len(days)//8)
+            ax9.set_xticks(list(x)[::step])
+            ax9.set_xticklabels(days[::step], fontsize=7, rotation=30, ha="right", color=MUT)
+            ax9.set_ylabel("Daily Failures", fontsize=8, color=MUT)
+            ax9.legend(fontsize=7, framealpha=0, loc="upper left")
+            ax9b.legend(fontsize=7, framealpha=0, loc="upper right")
+            ax9.grid(axis="y", alpha=0.3, color=BD)
+        else:
+            ax9.text(0.5, 0.5, "No failure timeline data", ha="center", va="center",
+                     transform=ax9.transAxes, color=MUT, fontsize=10)
+        ax9.set_title("Failure Timeline", fontsize=10, color=TXT, pad=6)
+        ax9.tick_params(colors=MUT)
+        fig9.tight_layout()
+        self._embed_chart(fig9, 4, 0, "Failure Timeline")
+
+        # ── Chart 10: Pass Rate by Component Type ────────────────
+        fig10, ax10 = plt.subplots(figsize=FSIZE)
+        fig10.patch.set_facecolor(S2); ax10.set_facecolor(S3)
+        if comp_type:
+            types  = [c["type"] or "?" for c in comp_type]
+            totals = [c["total"] for c in comp_type]
+            fails  = [c["fails"] for c in comp_type]
+            rates  = [((t-f)/t*100 if t>0 else 0) for t,f in zip(totals, fails)]
+            fail_r = [100-r for r in rates]
+            x = range(len(types))
+            ax10.bar(x, rates, color=PASS, alpha=0.85, width=0.5, label="Pass %")
+            ax10.bar(x, fail_r, bottom=rates, color=FAIL, alpha=0.85, width=0.5, label="Fail %")
+            ax10.axhline(98, color=WARN, linewidth=1.5, linestyle="--", alpha=0.8, label="98% target")
+            for i, r in enumerate(rates):
+                ax10.text(i, r/2, f"{r:.0f}%", ha="center", va="center",
+                         fontsize=9, color="white", fontweight="bold")
+            ax10.set_xticks(list(x))
+            ax10.set_xticklabels(types, fontsize=9, color=TXT)
+            ax10.set_ylim(0, 110)
+            ax10.legend(fontsize=7, framealpha=0)
+            ax10.grid(axis="y", alpha=0.3, color=BD)
+        ax10.set_title("Pass Rate by Component Type", fontsize=10, color=TXT, pad=6)
+        ax10.tick_params(colors=MUT)
+        fig10.tight_layout()
+        self._embed_chart(fig10, 4, 1, "Pass Rate by Type")
 
 
 # ── SEARCH PAGE ───────────────────────────────────────────────────
@@ -516,7 +699,6 @@ class RunDetailPopup(ctk.CTkToplevel):
         data = {
             "components": detail["components"],
             "failed_detail": [c for c in detail["components"] if c["status"]=="FAIL"],
-            "power_rails": detail["power_rails"],
         }
         tp = TablesPanel(self)
         tp.pack(fill="both", expand=True)
@@ -534,7 +716,7 @@ class WatcherBar(ctk.CTkFrame):
         self._dot.pack(side="left", padx=(12,4))
         ctk.CTkLabel(self, text="WATCHING:", font=("Segoe UI",9,"bold"),
                      text_color=MUT).pack(side="left", padx=(0,4))
-        self._folder_lbl = ctk.CTkLabel(self, text=cfg.watch_folder,
+        self._folder_lbl = ctk.CTkLabel(self, text=cfg.watch_folder or "No folder selected",
                                          font=("Courier New",10), text_color=TXT)
         self._folder_lbl.pack(side="left", padx=4)
         ctk.CTkButton(self, text="Change Folder", width=110, height=26,
@@ -559,7 +741,7 @@ class WatcherBar(ctk.CTkFrame):
 class ICTApp(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("ICT Report Analyzer  v7.1")
+        self.title("ICT Report Analyzer  v8.0")
         self.geometry("1500x940"); self.minsize(1100,720)
         self.configure(fg_color=BG)
 
@@ -567,14 +749,35 @@ class ICTApp(ctk.CTk):
         self.db       = DBManager()
         self.parser   = ICTParser()
         self.reporter = ReportGenerator()
-        self._data    = None  # set when user opens a run detail
+        self._data    = None
+        self._file_count = 0
 
         self._build()
 
-        # Start file watcher
+        # Prompt for watch folder if not set
+        if not self.cfg.watch_folder or not os.path.isdir(self.cfg.watch_folder):
+            self.after(300, self._prompt_watch_folder)
+        else:
+            self._start_watcher()
+
+    def _prompt_watch_folder(self):
+        messagebox.showinfo("Welcome",
+            "Select the folder where your ICT test files are located.\n"
+            "The app will automatically monitor this folder for new files.")
+        folder = filedialog.askdirectory(title="Select ICT Files Folder")
+        if folder:
+            self.cfg.set("watch_folder", folder)
+            self._wbar.set_folder(folder)
+            self._start_watcher()
+        else:
+            self._wbar.set_status("No folder selected — click Change Folder", WARN)
+
+    def _start_watcher(self):
         self.watcher = FileWatcher(self.db, self.cfg,
                                     on_new_file=self._on_new_file)
         self.watcher.start()
+        self._wbar.set_active(True)
+        self._update_file_count()
 
     # ── BUILD UI ──────────────────────────────────────────────────
     def _build(self):
@@ -628,6 +831,17 @@ class ICTApp(ctk.CTk):
             border_color=FAIL, border_width=1,
             font=("Segoe UI",11), text_color=FAIL,
             command=self._reset_data).pack(side="right",padx=4)
+
+        # Theme selector
+        theme_names = [THEMES[k]["name"] for k in THEME_NAMES]
+        current = THEMES.get(self.cfg.get("theme","dark_navy"),{}).get("name","Dark Navy")
+        self._theme_var = tk.StringVar(value=current)
+        ctk.CTkOptionMenu(
+            bar, variable=self._theme_var, values=theme_names,
+            fg_color=S3, button_color=BD, button_hover_color=S1,
+            text_color=TXT, font=("Segoe UI",10), width=140, height=30,
+            command=self._change_theme
+        ).pack(side="right", padx=4)
 
     def _watcher_bar(self):
         self._wbar = WatcherBar(self, self.cfg,
@@ -722,8 +936,9 @@ class ICTApp(ctk.CTk):
             self._rep_tv.column(col, width=w, anchor="w", minwidth=50)
         self._rep_tv.tag_configure("pass", foreground=PASS)
         self._rep_tv.tag_configure("fail", foreground=FAIL)
+        self._rep_tv.bind("<<TreeviewSelect>>", lambda e: self._rep_select(e))
         self._rep_tv.bind("<Double-1>", lambda e: self._rep_double_click(e))
-        ctk.CTkLabel(frame, text="Double-click a row to view full report",
+        ctk.CTkLabel(frame, text="Click a row to select · Double-click to view details",
                      font=("Segoe UI",9), text_color=DIM).pack(pady=(0,4))
         return frame
 
@@ -755,7 +970,7 @@ class ICTApp(ctk.CTk):
         self._chart_btns = []
         for lbl, key in [("🍩 Pass/Fail","donut"),("🎯 Gauge","gauge"),
                           ("📈 Pareto","pareto"),("📊 Comp Types","comp"),
-                          ("📊 Test Types","test"),("⚡ Power Rails","power"),
+                          ("📊 Test Types","test"),
                           ("📉 Deviations","deviation"),("🔢 Type Pass Rate","typerate")]:
             btn = ctk.CTkButton(cbar, text=lbl, width=0, height=32,
                                  fg_color=S3, hover_color=S1,
@@ -778,7 +993,7 @@ class ICTApp(ctk.CTk):
         # Console
         self._con = ConsoleFrame(frame, height=130)
         self._con.pack(fill="x", side="bottom")
-        self._con.log("ICT Report Analyzer v7.0 ready.")
+        self._con.log("ICT Report Analyzer v8.0 ready.")
 
         return frame
 
@@ -847,16 +1062,17 @@ class ICTApp(ctk.CTk):
         if folder:
             self.cfg.set("watch_folder", folder)
             self._wbar.set_folder(folder)
-            # Fully stop old watcher (waits for thread to exit)
-            self.watcher.stop()
-            # Create new watcher for new folder
-            self.watcher = FileWatcher(self.db, self.cfg,
-                                        on_new_file=self._on_new_file)
-            self.watcher.start()
-            self._wbar.set_active(True)
-            self._wbar.set_status(f"Watching: {folder}", INFO)
-            # Immediate scan of the new folder
+            if hasattr(self, 'watcher'):
+                self.watcher.stop()
+            self._start_watcher()
             threading.Thread(target=self.watcher.scan_now, daemon=True).start()
+
+    def _update_file_count(self):
+        try:
+            self._file_count = len(self.db.get_processed_files())
+            self._wbar.set_status(f"{self._file_count} files processed", MUT)
+        except Exception:
+            pass
 
     def _scan_now(self):
         self._wbar.set_status("Scanning...", WARN)
@@ -892,6 +1108,8 @@ class ICTApp(ctk.CTk):
             self.after(0, lambda: self._wbar.set_status(
                 f"✓ {os.path.basename(filepath)} → {s['status']}", 
                 PASS if s["status"]=="PASS" else FAIL))
+            self._file_count += 1
+            self.after(2000, self._update_file_count)
 
             # If Manual Run page is visible, update it
             if self._active_page == "console_frame":
@@ -907,6 +1125,16 @@ class ICTApp(ctk.CTk):
         if self._active_page == "dashboard":  self._pages["dashboard"].refresh()
         elif self._active_page == "reports":  self._refresh_reports()
         elif self._active_page == "search":   self._pages["search"].refresh()
+
+    def _change_theme(self, display_name):
+        """Save selected theme and restart the app."""
+        for key, t in THEMES.items():
+            if t["name"] == display_name:
+                self.cfg.set("theme", key)
+                break
+        messagebox.showinfo("Theme Changed",
+            f"Theme set to '{display_name}'.\n\n"
+            f"Restart the app to apply the new theme.")
 
     # ── MANUAL GENERATE ───────────────────────────────────────────
     def _select_file(self):
@@ -1005,14 +1233,13 @@ class ICTApp(ctk.CTk):
     def _open_chart_fn(self, key, data=None):
         from app import (chart_donut, chart_gauge, chart_pareto,
                           chart_comp_types, chart_test_types,
-                          chart_power, chart_deviation, chart_pass_rate_by_type)
+                          chart_deviation, chart_pass_rate_by_type)
         REGISTRY = {
             "donut":    ("Pass / Fail Overview",           lambda f: chart_donut(f,data),          (7,6.5)),
             "gauge":    ("Pass Rate Gauge",                 lambda f: chart_gauge(f,data),          (7,6.5)),
             "pareto":   ("Pareto — Top Failures",          lambda f: chart_pareto(f,data),         (10,6.5)),
             "comp":     ("Component Type Breakdown",       lambda f: chart_comp_types(f,data),     (9,6.5)),
             "test":     ("Test Type Breakdown",            lambda f: chart_test_types(f,data),     (9,6.5)),
-            "power":    ("Power Supply Rails",             lambda f: chart_power(f,data),          (10,6.5)),
             "deviation":("Deviation Distribution",        lambda f: chart_deviation(f,data),       (9,6.5)),
             "typerate": ("Pass Rate by Component Type",   lambda f: chart_pass_rate_by_type(f,data),(9,6.5)),
         }
@@ -1037,21 +1264,26 @@ class ICTApp(ctk.CTk):
                 tags=(tag,))
         self._reports_count.configure(text=f"{len(runs)} report(s)")
 
+    def _rep_select(self, event):
+        """Single-click: load run data so Save PDF / Export XLSX work."""
+        sel = self._rep_tv.selection()
+        if not sel: return
+        run_id = int(self._rep_tv.item(sel[0])["values"][0])
+        self._load_run_data(run_id)
+
     def _rep_double_click(self, event):
         sel = self._rep_tv.selection()
         if not sel: return
         run_id = int(self._rep_tv.item(sel[0])["values"][0])
-        self._view_run(run_id)
+        self._load_run_data(run_id)
+        RunDetailPopup(self, run_id, self.db)
 
-    def _view_run(self, run_id: int):
-        """Open run detail popup AND load data into self._data for PDF/XLSX export."""
+    def _load_run_data(self, run_id: int):
+        """Load run data into self._data for PDF/XLSX export."""
         detail = self.db.get_run_detail(run_id)
         if not detail:
-            messagebox.showerror("Not Found", f"Run ID {run_id} not found in database.")
             return
-
         r = detail["run"]
-        # Build a minimal data dict so PDF/XLSX work
         failed_detail = [c for c in detail["components"] if c["status"] == "FAIL"]
         self._data = {
             "summary": {
@@ -1067,7 +1299,6 @@ class ICTApp(ctk.CTk):
             },
             "components":    detail["components"],
             "failed_detail": failed_detail,
-            "power_rails":   detail["power_rails"],
             "component_types": self._build_comp_types(detail["components"]),
             "test_types":      self._build_test_types(detail["components"]),
             "top_failures":    self._build_top_failures(failed_detail),
@@ -1075,10 +1306,15 @@ class ICTApp(ctk.CTk):
             "parse_log":       [],
             "run_folder":      r.get("report_folder", ""),
         }
-        # Enable PDF / XLSX buttons
         self._pdf_btn.configure(state="normal")
         self._export_btn.configure(state="normal")
 
+    def _view_run(self, run_id: int):
+        """Open run detail popup AND load data."""
+        self._load_run_data(run_id)
+        if not self._data:
+            messagebox.showerror("Not Found", f"Run ID {run_id} not found in database.")
+            return
         RunDetailPopup(self, run_id, self.db)
 
     def _build_comp_types(self, components):
@@ -1117,83 +1353,21 @@ class ICTApp(ctk.CTk):
     # ── SAVE PDF ──────────────────────────────────────────────────
     def _save_pdf(self):
         if not self._data:
-            messagebox.showinfo("No Data","Generate a report first.")
+            messagebox.showinfo("No Data","Select a report from the Reports tab first.")
             return
-        dlg = ctk.CTkToplevel(self)
-        dlg.title("PDF Export Options"); dlg.geometry("460x700")
-        dlg.resizable(False,False); dlg.configure(fg_color=BG)
-        dlg.transient(self); dlg.grab_set(); dlg.lift(); dlg.focus_force()
-
-        ctk.CTkLabel(dlg, text="Select sections to include",
-                     font=("Segoe UI",13,"bold"), text_color=TXT).pack(
-            padx=24, pady=(20,2), anchor="w")
-        ctk.CTkLabel(dlg, text="PDF auto-saves to ICT_Reports folder",
-                     font=("Segoe UI",10), text_color=MUT).pack(
-            padx=24, pady=(0,10), anchor="w")
-
-        ctk.CTkLabel(dlg, text="  REPORT SECTIONS",
-                     font=("Segoe UI",9,"bold"), text_color=INFO).pack(
-            anchor="w", padx=20, pady=(4,2))
-        sf = ctk.CTkFrame(dlg, fg_color=S2, corner_radius=8,
-                           border_width=1, border_color=BD)
-        sf.pack(fill="x", padx=20, pady=(0,8))
-        sec_vars = {}
-        for key, lbl, default in [
-            ("cover","Cover Page & Board Info",True),
-            ("summary","Executive Summary Table",True),
-            ("failed","Failed Components Table",True),
-            ("power","Power Supply Measurements",True),
-            ("insights","Insights & Warnings",True),
-            ("components","Full Component Results Table",True),
-        ]:
-            v = tk.BooleanVar(value=default); sec_vars[key] = v
-            row = ctk.CTkFrame(sf, fg_color="transparent"); row.pack(fill="x",padx=12,pady=3)
-            ctk.CTkCheckBox(row, text=lbl, variable=v, font=("Segoe UI",11),
-                            text_color=TXT, fg_color=INFO, hover_color="#0097a7",
-                            border_color=BD2).pack(side="left")
-
-        ctk.CTkLabel(dlg, text="  CHARTS",
-                     font=("Segoe UI",9,"bold"), text_color=PUR).pack(
-            anchor="w", padx=20, pady=(4,2))
-        cf = ctk.CTkFrame(dlg, fg_color=S2, corner_radius=8,
-                           border_width=1, border_color=BD)
-        cf.pack(fill="x", padx=20, pady=(0,8))
-        chart_vars = {}
-        for key, lbl, default in [
-            ("chart_donut","Pass / Fail Donut + Gauge",True),
-            ("chart_pareto","Pareto — Top Failures",True),
-            ("chart_comp","Component Type Breakdown",True),
-            ("chart_power","Power Supply Rails",True),
-            ("chart_deviation","Deviation Distribution",True),
-        ]:
-            v = tk.BooleanVar(value=default); chart_vars[key] = v
-            row = ctk.CTkFrame(cf, fg_color="transparent"); row.pack(fill="x",padx=12,pady=3)
-            ctk.CTkCheckBox(row, text=lbl, variable=v, font=("Segoe UI",11),
-                            text_color=TXT, fg_color=PUR, hover_color="#6a3de8",
-                            border_color=BD2).pack(side="left")
-
-        result = {"go":False}
-        def on_export(): result["go"]=True; dlg.destroy()
-
-        btn_row = ctk.CTkFrame(dlg, fg_color="transparent")
-        btn_row.pack(fill="x", padx=20, pady=(8,20))
-        ctk.CTkButton(btn_row, text="Cancel", width=120, height=36,
-                       fg_color=S3, hover_color=BG, border_color=BD, border_width=1,
-                       font=("Segoe UI",11), text_color=MUT,
-                       command=dlg.destroy).pack(side="left")
-        ctk.CTkButton(btn_row, text="📄  Export PDF", width=160, height=36,
-                       fg_color=WBG, hover_color="#4d3a00",
-                       border_color=WARN, border_width=1,
-                       font=("Segoe UI",11,"bold"), text_color=WARN,
-                       command=on_export).pack(side="right")
-        dlg.wait_window()
-        if not result["go"]: return
-
+        s = self._data["summary"]
+        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        default_name = f"ICT_{s['board_name']}_{s['serial']}_{ts}.pdf"
+        path = filedialog.asksaveasfilename(
+            title="Save PDF Report",
+            defaultextension=".pdf",
+            filetypes=[("PDF files","*.pdf")],
+            initialfile=default_name)
+        if not path:
+            return
         try:
-            out = self.reporter.generate(self._data, save_path=None,
-                sections={k:v.get() for k,v in sec_vars.items()},
-                charts={k:v.get() for k,v in chart_vars.items()})
-            messagebox.showinfo("Saved", f"PDF auto-saved:\n{out}")
+            out = self.reporter.generate(self._data, save_path=path)
+            messagebox.showinfo("Saved", f"PDF saved:\n{out}")
         except Exception as e:
             messagebox.showerror("PDF Error", str(e))
 
@@ -1230,11 +1404,6 @@ class ICTApp(ctk.CTk):
                 ws3.append([c["ref"],c["type"],c.get("nominal","—"),
                              c.get("measured","—"),c.get("deviation","—"),
                              c.get("limit","—"),c.get("note","—")])
-            ws4=wb.create_sheet("Power Supply")
-            ws4.append(["Rail","Nominal","Measured","Deviation","Ripple","Status"])
-            for p in self._data.get("power_rails",[]):
-                ws4.append([p["rail"],p["nominal"],p["measured"],
-                             p.get("deviation","—"),p.get("ripple","—"),p["status"]])
             wb.save(path)
             messagebox.showinfo("Exported",f"Saved:\n{path}")
         except ImportError:
@@ -1386,7 +1555,8 @@ class ICTApp(ctk.CTk):
             messagebox.showerror("Reset Error", str(e))
 
     def on_close(self):
-        self.watcher.stop()
+        if hasattr(self, 'watcher'):
+            self.watcher.stop()
         plt.close("all")
         self.destroy()
 
@@ -1465,35 +1635,31 @@ def chart_test_types(fig, data):
         ax.grid(axis="y",alpha=0.3)
     ax.set_title("Test Type Breakdown",fontsize=13,color=TXT,pad=14); fig.tight_layout()
 
-def chart_power(fig, data):
-    ax=fig.add_subplot(111); rails=data.get("power_rails",[])
-    if rails:
-        names,noms,meas,clrs=[],[],[],[]
-        for r in rails:
-            names.append(r["rail"])
-            try: noms.append(float(str(r["nominal"]).replace("V",""))); meas.append(float(str(r["measured"]).replace("V","")))
-            except: noms.append(0); meas.append(0)
-            clrs.append(PASS if r["status"]=="PASS" else FAIL)
-        x=np.arange(len(names)); w=0.32
-        ax.bar(x-w/2,noms,w,color=INFO,alpha=0.7,label="Nominal")
-        bars=ax.bar(x+w/2,meas,w,color=clrs,alpha=0.88,label="Measured")
-        ax.bar_label(bars,fmt="%.3f",padding=3,fontsize=9,color=MUT)
-        ax.set_xticks(x); ax.set_xticklabels(names,fontsize=12)
-        ax.tick_params(axis="y",labelsize=10); ax.legend(fontsize=10,framealpha=0)
-        ax.grid(axis="y",alpha=0.3)
-    ax.set_title("Power Supply — Nominal vs Measured",fontsize=13,color=TXT,pad=14); fig.tight_layout()
-
 def chart_deviation(fig, data):
     ax=fig.add_subplot(111); devs=[]
     for c in data.get("components",[]):
-        try: devs.append(float(str(c.get("deviation","")).replace("%","").replace("+","")))
+        try:
+            val=str(c.get("deviation","")).replace("%","").replace("+","").replace("—","").replace("–","").strip()
+            if val: devs.append(float(val))
         except: pass
-    if devs:
-        ax.hist(devs,bins=20,color=INFO,alpha=0.7,edgecolor=BD,linewidth=0.5)
-        ax.axvline(-5,color=WARN,linewidth=1.5,linestyle="--",alpha=0.8,label="±5% limit")
-        ax.axvline(5,color=WARN,linewidth=1.5,linestyle="--",alpha=0.8)
-        ax.axvline(0,color=MUT,linewidth=0.8,alpha=0.5)
+    if devs and len(devs)>2:
+        d=np.array(devs)
+        q1,q3=np.percentile(d,[10,90]); iqr=q3-q1
+        if iqr<0.5: iqr=5
+        dc=d[(d>=q1-1.5*iqr)&(d<=q3+1.5*iqr)]
+        if len(dc)<3: dc=d
+        ax.hist(dc,bins=min(40,max(10,len(dc)//5)),color=INFO,alpha=0.7,edgecolor=BD)
+        ax.axvline(0,color=PASS,linewidth=1.5,alpha=0.8,label="Nominal")
+        mu=np.mean(dc); sd=np.std(dc)
+        ax.axvline(mu,color=WARN,linewidth=1,linestyle="--",alpha=0.8,label=f"μ={mu:.2f}%")
+        if sd>0:
+            ax.axvline(mu+2*sd,color=FAIL,linewidth=1,linestyle=":",alpha=0.6,label=f"±2σ={2*sd:.2f}%")
+            ax.axvline(mu-2*sd,color=FAIL,linewidth=1,linestyle=":",alpha=0.6)
+        ax.set_xlabel("Deviation %",fontsize=10); ax.set_ylabel("Count",fontsize=10)
         ax.legend(fontsize=10,framealpha=0); ax.grid(axis="y",alpha=0.3)
+    else:
+        ax.text(0.5,0.5,"Insufficient deviation data",ha="center",va="center",
+                transform=ax.transAxes,color=MUT,fontsize=11)
     ax.set_title("Measurement Deviation Distribution",fontsize=13,color=TXT,pad=14)
     fig.tight_layout()
 
@@ -1515,6 +1681,12 @@ def chart_pass_rate_by_type(fig, data):
 
 
 if __name__ == "__main__":
+    import multiprocessing
+    multiprocessing.freeze_support()
+    import sys, os
+    # PyInstaller bundles files into _MEIPASS temp dir
+    if getattr(sys, 'frozen', False):
+        os.chdir(os.path.dirname(sys.executable))
     app = ICTApp()
     app.protocol("WM_DELETE_WINDOW", app.on_close)
     app.mainloop()

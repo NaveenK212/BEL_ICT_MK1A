@@ -1,9 +1,15 @@
 """
 Database manager — SQLite backend for ICT run history + processed file tracking.
 """
-import sqlite3, os, datetime, re
+import sqlite3, os, datetime, re, sys
 
-OUTPUT_ROOT = os.path.join(os.path.expanduser("~"), "Desktop", "ICT_Reports")
+# App root: next to EXE if frozen, next to script if running from source
+if getattr(sys, 'frozen', False):
+    _APP_ROOT = os.path.dirname(sys.executable)
+else:
+    _APP_ROOT = os.path.dirname(os.path.abspath(__file__))
+
+OUTPUT_ROOT = os.path.join(_APP_ROOT, "ICT_Reports")
 DB_PATH     = os.path.join(OUTPUT_ROOT, "ict_results.db")
 
 
@@ -23,7 +29,6 @@ class DBManager:
         try:
             with self._connect() as con:
                 con.execute("PRAGMA optimize")
-            # Overwrite path so no new queries hit old file
             self.db_path = ":memory:"
         except Exception:
             pass
@@ -55,16 +60,6 @@ class DBManager:
                     status    TEXT,
                     note      TEXT
                 );
-                CREATE TABLE IF NOT EXISTS power_rails (
-                    id        INTEGER PRIMARY KEY AUTOINCREMENT,
-                    run_id    INTEGER REFERENCES runs(id) ON DELETE CASCADE,
-                    rail      TEXT,
-                    nominal   TEXT,
-                    measured  TEXT,
-                    deviation TEXT,
-                    ripple    TEXT,
-                    status    TEXT
-                );
                 CREATE TABLE IF NOT EXISTS processed_files (
                     id        INTEGER PRIMARY KEY AUTOINCREMENT,
                     filepath  TEXT,
@@ -76,7 +71,6 @@ class DBManager:
                 CREATE INDEX IF NOT EXISTS idx_pf_path   ON processed_files(filepath);
                 CREATE INDEX IF NOT EXISTS idx_pf_hash   ON processed_files(filehash);
             """)
-            # Migrate: add report_folder if missing
             cols = [r[1] for r in con.execute("PRAGMA table_info(runs)").fetchall()]
             if "report_folder" not in cols:
                 con.execute("ALTER TABLE runs ADD COLUMN report_folder TEXT")
@@ -110,7 +104,7 @@ class DBManager:
         safe_board  = re.sub(r'[\\/:*?"<>|]', "_", s["board_name"])
         safe_serial = re.sub(r'[\\/:*?"<>|]', "_", s["serial"])
         run_folder  = os.path.join(OUTPUT_ROOT, safe_board, f"{safe_serial}_{ts}")
-        os.makedirs(run_folder, exist_ok=True)
+        # Folder is NOT created here — only when user explicitly saves a PDF
 
         with self._connect() as con:
             cur = con.execute(
@@ -134,21 +128,12 @@ class DBManager:
                   c["status"], c.get("note",""))
                  for c in data.get("components", [])]
             )
-            con.executemany(
-                """INSERT INTO power_rails
-                   (run_id, rail, nominal, measured, deviation, ripple, status)
-                   VALUES (?,?,?,?,?,?,?)""",
-                [(run_id, p["rail"], p["nominal"], p["measured"],
-                  p.get("deviation",""), p.get("ripple",""), p["status"])
-                 for p in data.get("power_rails", [])]
-            )
 
         data["run_folder"] = run_folder
         return run_id
 
     # ── SEARCH ────────────────────────────────────────────────────
     def search(self, query: str, limit: int = 100) -> list:
-        """Search runs by board name, serial, or status."""
         q = f"%{query}%"
         with self._connect() as con:
             rows = con.execute(
@@ -160,7 +145,6 @@ class DBManager:
         return [dict(r) for r in rows]
 
     def get_run_detail(self, run_id: int) -> dict:
-        """Get full run data including components and power rails."""
         with self._connect() as con:
             run = con.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone()
             if not run:
@@ -168,13 +152,9 @@ class DBManager:
             comps = con.execute(
                 "SELECT * FROM components WHERE run_id=? ORDER BY ref", (run_id,)
             ).fetchall()
-            rails = con.execute(
-                "SELECT * FROM power_rails WHERE run_id=?", (run_id,)
-            ).fetchall()
         return {
             "run":        dict(run),
             "components": [dict(c) for c in comps],
-            "power_rails":[dict(r) for r in rails],
         }
 
     # ── READ ──────────────────────────────────────────────────────
@@ -236,7 +216,6 @@ class DBManager:
         return [dict(r) for r in rows]
 
     def get_dashboard_stats(self) -> dict:
-        """Aggregate stats for the dashboard home page."""
         with self._connect() as con:
             total_runs = con.execute("SELECT COUNT(*) FROM runs").fetchone()[0]
             pass_runs  = con.execute("SELECT COUNT(*) FROM runs WHERE status='PASS'").fetchone()[0]
@@ -245,22 +224,132 @@ class DBManager:
             total_fail = con.execute("SELECT SUM(failed) FROM runs").fetchone()[0] or 0
             avg_rate   = con.execute("SELECT AVG(pass_rate) FROM runs").fetchone()[0] or 0
             boards     = con.execute("SELECT COUNT(DISTINCT board_name) FROM runs").fetchone()[0]
+            min_rate   = con.execute("SELECT MIN(pass_rate) FROM runs").fetchone()[0] or 0
+            max_rate   = con.execute("SELECT MAX(pass_rate) FROM runs").fetchone()[0] or 0
             recent     = con.execute(
                 "SELECT * FROM runs ORDER BY timestamp DESC LIMIT 10"
             ).fetchall()
+            worst = con.execute(
+                "SELECT board_name, AVG(pass_rate) as avg FROM runs GROUP BY board_name ORDER BY avg ASC LIMIT 1"
+            ).fetchone()
+            best = con.execute(
+                "SELECT board_name, AVG(pass_rate) as avg FROM runs GROUP BY board_name ORDER BY avg DESC LIMIT 1"
+            ).fetchone()
         return {
-            "total_runs":   total_runs,
-            "pass_runs":    pass_runs,
-            "fail_runs":    fail_runs,
-            "total_comp":   total_comp,
+            "total_runs":      total_runs,
+            "pass_runs":       pass_runs,
+            "fail_runs":       fail_runs,
+            "total_comp":      total_comp,
             "total_fail_comp": total_fail,
-            "avg_rate":     round(avg_rate, 2),
-            "boards":       boards,
-            "recent":       [dict(r) for r in recent],
+            "avg_rate":        round(avg_rate, 2),
+            "min_rate":        round(min_rate, 2),
+            "max_rate":        round(max_rate, 2),
+            "boards":          boards,
+            "recent":          [dict(r) for r in recent],
+            "worst_board":     dict(worst) if worst else None,
+            "best_board":      dict(best) if best else None,
+            "fpy":             round(pass_runs / total_runs * 100, 1) if total_runs > 0 else 0,
         }
 
+    def get_component_type_failures(self) -> list:
+        with self._connect() as con:
+            rows = con.execute(
+                """SELECT type, COUNT(*) as total,
+                          SUM(CASE WHEN status='FAIL' THEN 1 ELSE 0 END) as fails
+                   FROM components GROUP BY type ORDER BY fails DESC"""
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_daily_throughput(self) -> list:
+        with self._connect() as con:
+            rows = con.execute(
+                """SELECT DATE(timestamp) as day, COUNT(*) as count,
+                          SUM(CASE WHEN status='PASS' THEN 1 ELSE 0 END) as passed,
+                          SUM(CASE WHEN status='FAIL' THEN 1 ELSE 0 END) as failed
+                   FROM runs GROUP BY DATE(timestamp) ORDER BY day"""
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_board_pass_fail_counts(self) -> list:
+        with self._connect() as con:
+            rows = con.execute(
+                """SELECT board_name,
+                          SUM(CASE WHEN status='PASS' THEN 1 ELSE 0 END) as pass_count,
+                          SUM(CASE WHEN status='FAIL' THEN 1 ELSE 0 END) as fail_count,
+                          COUNT(*) as total
+                   FROM runs GROUP BY board_name ORDER BY board_name"""
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_deviation_distribution(self) -> list:
+        """Deviation values for histogram (numeric deviations only)."""
+        with self._connect() as con:
+            rows = con.execute(
+                """SELECT deviation FROM components
+                   WHERE deviation != '' AND deviation IS NOT NULL"""
+            ).fetchall()
+        devs = []
+        for r in rows:
+            try:
+                val = str(r["deviation"]).replace("%", "").replace("+", "").replace("—", "").replace("–", "").strip()
+                if val and val != "—":
+                    devs.append(float(val))
+            except (ValueError, TypeError):
+                pass
+        return devs
+
+    def get_failure_timeline(self) -> list:
+        with self._connect() as con:
+            rows = con.execute(
+                """SELECT DATE(timestamp) as day, SUM(failed) as fails
+                   FROM runs GROUP BY DATE(timestamp) ORDER BY day"""
+            ).fetchall()
+        cumulative = []
+        total = 0
+        for r in rows:
+            total += r["fails"]
+            cumulative.append({"day": r["day"], "fails": r["fails"], "cumulative": total})
+        return cumulative
+
+    def get_deviation_by_type(self) -> dict:
+        """Deviation values grouped by component type for box plots."""
+        with self._connect() as con:
+            rows = con.execute(
+                """SELECT type, deviation FROM components
+                   WHERE deviation != '' AND deviation IS NOT NULL"""
+            ).fetchall()
+        result = {}
+        for r in rows:
+            try:
+                val = str(r["deviation"]).replace("%","").replace("+","").replace("—","").replace("–","").strip()
+                if val:
+                    t = r["type"] or "Other"
+                    if t not in result:
+                        result[t] = []
+                    result[t].append(float(val))
+            except (ValueError, TypeError):
+                pass
+        return result
+
+    def get_repeat_failures(self) -> list:
+        """Components that fail across multiple distinct runs."""
+        with self._connect() as con:
+            rows = con.execute(
+                """SELECT ref, type, COUNT(DISTINCT run_id) as run_count,
+                          COUNT(*) as total_fails
+                   FROM components WHERE status='FAIL'
+                   GROUP BY ref HAVING run_count > 1
+                   ORDER BY run_count DESC, total_fails DESC LIMIT 15"""
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_pass_rate_histogram(self) -> list:
+        """All pass rates for histogram distribution."""
+        with self._connect() as con:
+            rows = con.execute("SELECT pass_rate FROM runs ORDER BY pass_rate").fetchall()
+        return [r["pass_rate"] for r in rows]
+
     def seed_demo_data(self):
-        """Insert realistic historical runs for demo/testing — NO folders created."""
         import random
         rng = random.Random(99)
         boards = ["MAIN-PCB-v2.3","MAIN-PCB-v2.2","CTRL-BOARD-v1.1","PWR-MODULE-v3"]
@@ -296,5 +385,4 @@ class DBManager:
     def delete_run(self, run_id: int):
         with self._connect() as con:
             con.execute("DELETE FROM components WHERE run_id=?", (run_id,))
-            con.execute("DELETE FROM power_rails WHERE run_id=?", (run_id,))
             con.execute("DELETE FROM runs WHERE id=?", (run_id,))

@@ -1,18 +1,24 @@
 """
 Config manager — stores app settings in a JSON file next to the app.
 """
-import os, json
+import os, json, sys
 
-CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
-DESKTOP     = os.path.join(os.path.expanduser("~"), "Desktop")
+# App root: next to EXE if frozen, next to script if running from source
+if getattr(sys, 'frozen', False):
+    APP_ROOT = os.path.dirname(sys.executable)
+else:
+    APP_ROOT = os.path.dirname(os.path.abspath(__file__))
+
+CONFIG_FILE = os.path.join(APP_ROOT, "config.json")
 
 DEFAULTS = {
-    "watch_folder":   os.path.join(DESKTOP, "ICT_Incoming"),
-    "output_root":    os.path.join(DESKTOP, "ICT_Reports"),
+    "watch_folder":   "",
+    "output_root":    os.path.join(APP_ROOT, "ICT_Reports"),
     "auto_pdf":       True,
-    "poll_interval":  2,          # seconds between folder checks
+    "poll_interval":  2,
     "admin_user":     "admin",
     "admin_pass":     "bel@2026",
+    "theme":          "dark_navy",
 }
 
 

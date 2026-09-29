@@ -50,7 +50,8 @@ class FileWatcher:
         for fp in self._db.get_processed_files():
             self._seen.add(fp)   # path-only fallback
         folder = self._cfg.watch_folder
-        os.makedirs(folder, exist_ok=True)
+        if folder:
+            os.makedirs(folder, exist_ok=True)
         self._thread = threading.Thread(target=self._loop, daemon=True)
         self._thread.start()
 
@@ -77,7 +78,7 @@ class FileWatcher:
     def _scan(self):
         with self._lock:
             folder = self._cfg.watch_folder
-            if not os.path.isdir(folder):
+            if not folder or not os.path.isdir(folder):
                 return
             for fname in sorted(os.listdir(folder)):
                 if not _has_supported_ext(fname):

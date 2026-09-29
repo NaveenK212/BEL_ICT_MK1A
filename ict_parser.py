@@ -38,26 +38,27 @@ class ICTParser:
         lines      = raw.splitlines()
         meta       = {}
         components = []
-        power_rails= []
+        
         parse_log  = []
 
-        cur_ref    = None
-        cur_status = None
-        cur_meas   = None
-        cur_upper  = None
-        cur_lower  = None
+        cur_ref     = None
+        cur_status  = None
+        cur_meas    = None
+        cur_nominal = None
+        cur_upper   = None
+        cur_lower   = None
 
         def flush():
             nonlocal cur_ref
             if cur_ref is None:
                 return
-            c = self._make_comp(cur_ref, cur_status, cur_meas, cur_upper, cur_lower)
+            c = self._make_comp(cur_ref, cur_status, cur_meas,
+                                cur_nominal, cur_upper, cur_lower)
             components.append(c)
             if c["status"] == "FAIL":
                 parse_log.append(
                     f"  → {c['ref']}: FAIL  "
-                    f"[meas={c['measured']}  limits: "
-                    f"{self._fmt(cur_lower)}–{self._fmt(cur_upper)}]")
+                    f"[meas={c['measured']}  nom={c['nominal']}]")
             cur_ref = None
 
         for line in lines:
@@ -66,8 +67,8 @@ class ICTParser:
                 continue
 
             # Board name from @BATCH line
-            if line.startswith("@BATCH"):
-                parts = line.split("|")
+            if "@BATCH" in line and "board_name" not in meta:
+                parts = line.lstrip("{").split("|")
                 if len(parts) > 1 and parts[1].strip():
                     meta["board_name"] = parts[1].strip()
 
@@ -75,39 +76,56 @@ class ICTParser:
             elif "@BTEST" in line:
                 parts = line.lstrip("{").split("|")
                 if len(parts) > 1 and parts[1].strip():
-                    meta["serial"] = parts[1].strip()
+                    meta["serial_raw"] = parts[1].strip()
+                    meta["serial"] = self._clean_serial(
+                        parts[1].strip(), meta.get("board_name", ""))
 
             # Block start
             elif "@BLOCK" in line:
                 flush()
                 parts = line.lstrip("{").split("|")
-                cur_ref    = parts[1].strip().upper() if len(parts) > 1 else "?"
+                ref_raw    = parts[1].strip() if len(parts) > 1 else "?"
+                # Clean ref: "k1%unp%jp1-4" → "K1"
+                cur_ref    = ref_raw.split("%")[0].upper()
                 raw_st     = parts[2].strip(" }") if len(parts) > 2 else "00"
                 cur_status = "PASS" if raw_st == "00" else "FAIL"
-                cur_meas   = None
-                cur_upper  = None
-                cur_lower  = None
+                cur_meas    = None
+                cur_nominal = None
+                cur_upper   = None
+                cur_lower   = None
 
-            # Measurement line
-            elif any(t in line for t in ("@A-JUM","@A-CAP","@A-RES",
-                                          "@A-IND","@A-DIO","@A-Z")):
+            # Measurement line — handle ALL Agilent measurement types
+            elif "@A-" in line:
                 m = re.search(r'\|\s*([+-]?[\d.Ee+\-]+)\s*\{', line)
                 if m:
                     try: cur_meas = float(m.group(1))
                     except Exception: pass
 
-                m2 = re.search(r'@LIM2\|([+-]?[\d.Ee+\-]+)\|([+-]?[\d.Ee+\-]+)', line)
-                if m2:
+                # @LIM3: nominal|upper|lower
+                m3 = re.search(r'@LIM3\|([+-]?[\d.Ee+\-]+)\|([+-]?[\d.Ee+\-]+)\|([+-]?[\d.Ee+\-]+)', line)
+                if m3:
                     try:
-                        cur_upper = float(m2.group(1))
-                        cur_lower = float(m2.group(2))
+                        cur_nominal = float(m3.group(1))
+                        cur_upper   = float(m3.group(2))
+                        cur_lower   = float(m3.group(3))
                     except Exception:
                         pass
-                    # Re-evaluate from actual values
-                    if cur_meas is not None and \
-                       cur_upper is not None and cur_lower is not None:
-                        lo = min(cur_upper, cur_lower)
-                        hi = max(cur_upper, cur_lower)
+                else:
+                    # @LIM2: upper|lower
+                    m2 = re.search(r'@LIM2\|([+-]?[\d.Ee+\-]+)\|([+-]?[\d.Ee+\-]+)', line)
+                    if m2:
+                        try:
+                            cur_upper = float(m2.group(1))
+                            cur_lower = float(m2.group(2))
+                        except Exception:
+                            pass
+
+                # Re-evaluate pass/fail from actual values
+                if cur_meas is not None and cur_upper is not None and cur_lower is not None:
+                    lo = min(cur_upper, cur_lower)
+                    hi = max(cur_upper, cur_lower)
+                    # Ignore extreme limits (sentinel values like 9.999999E+99)
+                    if hi < 1e90 and lo > -1e90:
                         cur_status = "PASS" if lo <= cur_meas <= hi else "FAIL"
 
             # Block close
@@ -126,7 +144,7 @@ class ICTParser:
         meta.setdefault("serial",
                         f"SN{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}")
 
-        return self._build(meta, components, power_rails,
+        return self._build(meta, components,
                            parse_log, filepath, "Keysight ICT")
 
     # ── CSV ───────────────────────────────────────────────────────
@@ -152,7 +170,7 @@ class ICTParser:
                 "Expected columns: ref, type, nominal, measured, status")
         meta["board_name"] = os.path.splitext(os.path.basename(filepath))[0]
         meta["serial"]     = f"SN{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}"
-        return self._build(meta, components, [], parse_log, filepath, "CSV")
+        return self._build(meta, components, parse_log, filepath, "CSV")
 
     # ── GENERIC TEXT ──────────────────────────────────────────────
     def _parse_generic(self, raw: str, filepath: str) -> dict:
@@ -193,12 +211,41 @@ class ICTParser:
                         os.path.splitext(os.path.basename(filepath))[0])
         meta.setdefault("serial",
                         f"SN{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}")
-        return self._build(meta, components, [], parse_log, filepath, "Generic Text")
+        return self._build(meta, components, parse_log, filepath, "Generic Text")
 
     # ── HELPERS ───────────────────────────────────────────────────
+    def _clean_serial(self, raw: str, board_name: str = "") -> str:
+        """Extract just the serial number from a raw serial string.
+        e.g. 'SN_TEJAS_RWR_1004_260504_FAIL' → 'SN1004'
+        """
+        s = raw.strip()
+        # Remove PASS/FAIL suffix
+        for suffix in ("_PASS", "_FAIL", "-PASS", "-FAIL"):
+            if s.upper().endswith(suffix):
+                s = s[:len(s)-len(suffix)]
+        # Remove board name prefix if present
+        if board_name:
+            # Try variations: exact, underscored, partial
+            for bn in [board_name, board_name.replace(" ","_")]:
+                for prefix_fmt in [f"SN_{bn}_", f"SN_{bn[:10]}_", f"SN_{bn[:9]}_"]:
+                    if s.startswith(prefix_fmt):
+                        s = s[len(prefix_fmt):]
+                        break
+        # Remove trailing date-like patterns (6+ digits at end: YYMMDD or YYMMDDHHMMSS)
+        m = re.match(r'^(\d+)_\d{6,}$', s)
+        if m:
+            s = m.group(1)
+        # If we still have the original messy string, find the core serial number
+        nums = re.findall(r'\d{3,}', s)
+        if nums:
+            return f"SN{nums[0]}"
+        # Fallback: return cleaned string
+        return s if s else raw
+
     def _fmt(self, val):
         if val is None: return "—"
         v = abs(val)
+        if v >= 1e90: return "—"  # sentinel / extreme value
         if v >= 1e9:  return f"{val/1e9:.3f}G"
         if v >= 1e6:  return f"{val/1e6:.3f}M"
         if v >= 1e3:  return f"{val/1e3:.3f}k"
@@ -206,6 +253,7 @@ class ICTParser:
         if v >= 1e-3: return f"{val*1e3:.4f}m"
         if v >= 1e-6: return f"{val*1e6:.4f}µ"
         if v >= 1e-9: return f"{val*1e9:.4f}n"
+        if v == 0:    return "0"
         return f"{val:.4e}"
 
     def _infer_type(self, ref: str) -> str:
@@ -220,16 +268,26 @@ class ICTParser:
         if r[0] in ("j","p","k","e"): return "Connector"
         return "Component"
 
-    def _make_comp(self, ref, status, meas, upper, lower):
+    def _make_comp(self, ref, status, meas, nominal_val, upper, lower):
         ctype = self._infer_type(ref)
         nominal = "—"; dev = "—"
-        if meas is not None and upper is not None and lower is not None:
-            lo = min(upper, lower); hi = max(upper, lower)
-            mid = (hi + lo) / 2
-            nominal = self._fmt(mid)
-            if mid != 0:
-                pct = (meas - mid) / abs(mid) * 100
+
+        # Use actual nominal from @LIM3 if available
+        if nominal_val is not None and abs(nominal_val) < 1e90:
+            nominal = self._fmt(nominal_val)
+            if nominal_val != 0 and meas is not None:
+                pct = (meas - nominal_val) / abs(nominal_val) * 100
                 dev = f"{'+' if pct >= 0 else ''}{pct:.1f}%"
+        elif meas is not None and upper is not None and lower is not None:
+            lo = min(upper, lower); hi = max(upper, lower)
+            # Skip extreme sentinel values
+            if hi < 1e90 and lo > -1e90:
+                mid = (hi + lo) / 2
+                nominal = self._fmt(mid)
+                if mid != 0:
+                    pct = (meas - mid) / abs(mid) * 100
+                    dev = f"{'+' if pct >= 0 else ''}{pct:.1f}%"
+
         return {
             "ref": ref, "type": ctype,
             "nominal": nominal,
@@ -250,7 +308,7 @@ class ICTParser:
             return "—"
 
     # ── BUILD RESULT DICT ─────────────────────────────────────────
-    def _build(self, meta, components, power_rails,
+    def _build(self, meta, components,
                parse_log, filepath, fmt) -> dict:
         total  = len(components)
         passed = sum(1 for c in components if c["status"] == "PASS")
@@ -294,9 +352,6 @@ class ICTParser:
         if rate < 98:
             insights.append(
                 f"WARNING: Pass rate {rate:.1f}% is below 98% threshold")
-        if any(p["status"] == "FAIL" for p in power_rails):
-            insights.append(
-                "WARNING: One or more power rails out of specification")
 
         return {
             "format":   fmt,
@@ -314,7 +369,6 @@ class ICTParser:
             },
             "components":       components,
             "failed_detail":    failed_detail,
-            "power_rails":      power_rails,
             "component_types":  comp_types,
             "test_types":       test_types,
             "top_failures":     top_failures,
