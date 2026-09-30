@@ -2,7 +2,7 @@
 ICT Report Analyzer  v8.0
 Auto-watch folder · Dashboard · Search · Reports
 """
-import os, datetime, threading, shutil, zipfile
+import os, sys, subprocess, datetime, threading, shutil, zipfile
 import customtkinter as ctk
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
@@ -187,8 +187,8 @@ class TablesPanel(ctk.CTkFrame):
             ["Ref","Test Type","Measured","Lower Limit","Upper Limit","Status"],
             [320,150,150,140,140,100])
         self.tv_fail  = self._tab("Failed Components",
-            ["Ref","Test Type","Measured","Lower Limit","Upper Limit","Note"],
-            [320,150,150,140,140,260])
+            ["Ref","Test Type","Measured","Lower Limit","Upper Limit","Why It Failed"],
+            [200,120,110,110,110,700])
 
     def _tab(self, name, cols, widths):
         tab = self.tabs.add(name)
@@ -215,6 +215,18 @@ class TablesPanel(ctk.CTkFrame):
         self._data = data
         self._render()
 
+    @staticmethod
+    def _why(c):
+        """Reason text for a failed component (older saved runs only have a
+        generic note until the parser re-processes them)."""
+        note = (c.get("note") or "").strip()
+        if note and note not in ("Out of tolerance", "Flagged FAIL by tester"):
+            return note
+        m, lo, hi = c.get("measured","—"), c.get("lower_limit","—"), c.get("upper_limit","—")
+        if m not in ("—","NA") and (lo not in ("—","NA") or hi not in ("—","NA")):
+            return f"Measured {m} is outside the limits {lo} to {hi}"
+        return note or "Flagged FAIL by tester"
+
     def _render(self):
         self._clear()
         q = self._q.get().strip().lower().replace(" ", "")   # "test jet" == "testjet"
@@ -239,11 +251,11 @@ class TablesPanel(ctk.CTkFrame):
             self.tv_fail.insert("","end", values=(
                 c["ref"],c["type"],c.get("measured","—"),
                 c.get("lower_limit") or "—",c.get("upper_limit") or "—",
-                c.get("note") or "—"),
+                self._why(c)),
                 tags=("fail",))
 
         self._count.configure(
-            text=f"{len(shown_c)} of {len(comps)} components  ·  {len(shown_f)} failed")
+            text=f"{len(shown_c)} of {len(comps)} test results  ·  {len(shown_f)} failed")
 
 
 # ── DASHBOARD PAGE ────────────────────────────────────────────────
@@ -257,15 +269,15 @@ class DashboardPage(ctk.CTkScrollableFrame):
 
     def _build(self):
         # Header bar
-        hdr = ctk.CTkFrame(self, fg_color="transparent", height=30)
+        hdr = ctk.CTkFrame(self, fg_color="transparent", height=38)
         hdr.pack(fill="x", padx=10, pady=(6,2))
         hdr.pack_propagate(False)
         ctk.CTkLabel(hdr, text="DASHBOARD", font=("Segoe UI",18,"bold"),
                      text_color=INFO).pack(side="left")
         self._refresh_btn = ctk.CTkButton(
-            hdr, text="↻  Refresh", width=80, height=24,
-            fg_color=S3, hover_color=S1, border_color=BD, border_width=1,
-            font=("Segoe UI",9), text_color=MUT,
+            hdr, text="↻  Refresh", width=110, height=32,
+            fg_color=S3, hover_color=S1, border_color=INFO, border_width=1,
+            font=("Segoe UI",11,"bold"), text_color=TXT,
             command=self.refresh)
         self._refresh_btn.pack(side="right")
 
@@ -662,16 +674,20 @@ class SearchPage(ctk.CTkFrame):
         s.map("Srch.Treeview", background=[("selected",S1)])
         s.layout("Srch.Treeview",[("Srch.Treeview.treearea",{"sticky":"nswe"})])
 
-        cols = ("ID","Board","Serial","Date","Total","Pass","Fail","Rate","Status")
+        cols = ("ID","Board","Serial","Test Date","Test Time","Rate","Status")
         f = tk.Frame(self, bg=BG); f.pack(fill="both", expand=True, padx=12, pady=8)
         sby = ttk.Scrollbar(f, orient="vertical")
         self._tv = ttk.Treeview(f, columns=cols, show="headings",
                                  style="Srch.Treeview", yscrollcommand=sby.set)
         sby.config(command=self._tv.yview)
         sby.pack(side="right", fill="y"); self._tv.pack(fill="both", expand=True)
-        for col, w in zip(cols,[50,180,160,140,70,60,60,80,80]):
-            self._tv.heading(col, text=col)
-            self._tv.column(col, width=w, anchor="w", minwidth=40)
+        # heading and cell text share one anchor so every column lines up
+        widths  = [60,320,220,150,130,110,120]
+        anchors = ["center","w","w","center","center","center","center"]
+        for col, w, a in zip(cols, widths, anchors):
+            self._tv.heading(col, text=col, anchor=a)
+            self._tv.column(col, width=w, anchor=a, minwidth=50,
+                            stretch=(col == "Board"))
         self._tv.tag_configure("pass", foreground=PASS)
         self._tv.tag_configure("fail", foreground=FAIL)
         self._tv.bind("<Double-1>", self._on_double_click)
@@ -692,8 +708,8 @@ class SearchPage(ctk.CTkFrame):
             tag = "pass" if r["status"]=="PASS" else "fail"
             self._tv.insert("","end", values=(
                 r["id"], r["board_name"], r["serial"],
-                r["timestamp"][:16] if r["timestamp"] else "—",
-                r["total"], r["passed"], r["failed"],
+                (r["timestamp"] or "")[:10] or "—",
+                (r["timestamp"] or "")[11:19] or "—",
                 f"{r['pass_rate']:.1f}%", r["status"]),
                 tags=(tag,))
         self._count_lbl.configure(text=f"{len(results)} RESULT(S)")
@@ -764,23 +780,23 @@ class RunDetailPopup(ctk.CTkToplevel):
 class WatcherBar(ctk.CTkFrame):
     def __init__(self, parent, cfg, on_set_folder, **kw):
         super().__init__(parent, fg_color=S1, corner_radius=0,
-                         border_width=1, border_color=BD, height=38, **kw)
+                         border_width=1, border_color=BD, height=52, **kw)
         self.pack_propagate(False)
-        self._dot = ctk.CTkLabel(self, text="●", font=("Segoe UI",12),
+        self._dot = ctk.CTkLabel(self, text="●", font=("Segoe UI",16),
                                   text_color=DIM)
-        self._dot.pack(side="left", padx=(12,4))
-        ctk.CTkLabel(self, text="WATCHING:", font=("Segoe UI",9,"bold"),
-                     text_color=MUT).pack(side="left", padx=(0,4))
+        self._dot.pack(side="left", padx=(14,5))
+        ctk.CTkLabel(self, text="WATCHING:", font=("Segoe UI",12,"bold"),
+                     text_color=MUT).pack(side="left", padx=(0,6))
         self._folder_lbl = ctk.CTkLabel(self, text=cfg.watch_folder or "No folder selected",
-                                         font=("Courier New",10), text_color=TXT)
+                                         font=("Courier New",13), text_color=TXT)
         self._folder_lbl.pack(side="left", padx=4)
-        ctk.CTkButton(self, text="Change Folder", width=110, height=26,
+        ctk.CTkButton(self, text="Change Folder", width=140, height=34,
                        fg_color=S3, hover_color=S1, border_color=BD, border_width=1,
-                       font=("Segoe UI",9), text_color=MUT,
-                       command=on_set_folder).pack(side="left", padx=6)
+                       font=("Segoe UI",12), text_color=TXT,
+                       command=on_set_folder).pack(side="left", padx=8)
         self._status = ctk.CTkLabel(self, text="",
-                                     font=("Segoe UI",9), text_color=MUT)
-        self._status.pack(side="right", padx=14)
+                                     font=("Segoe UI",12), text_color=MUT)
+        self._status.pack(side="right", padx=16)
 
     def set_active(self, active: bool):
         self._dot.configure(text_color=PASS if active else DIM)
@@ -808,12 +824,14 @@ class ICTApp(ctk.CTk):
         self._file_count = 0
 
         # Re-parse runs stored by an older parser so old rows never linger
+        self._recount_result = None
         try:
-            self.db.refresh_outdated_runs(self.parser)
+            self._recount_result = self.db.refresh_outdated_runs(self.parser)
         except Exception as e:
             print(f"[Startup] Could not refresh old runs: {e}")
 
         self._build()
+        self._show_recount_status()
 
         # Prompt for watch folder if not set
         if not self.cfg.watch_folder or not os.path.isdir(self.cfg.watch_folder):
@@ -865,21 +883,13 @@ class ICTApp(ctk.CTk):
                      font=("Segoe UI",10), text_color=MUT).pack(side="left", padx=8)
 
         # Right buttons
-        self._pdf_btn = ctk.CTkButton(
-            bar, text="📄  Save PDF", width=120, height=34,
-            fg_color=WBG, hover_color="#4d3a00",
-            border_color=WARN, border_width=1,
-            font=("Segoe UI",11), text_color=WARN,
-            command=self._save_pdf, state="disabled")
-        self._pdf_btn.pack(side="right", padx=(4,14))
-
         self._analytics_btn = ctk.CTkButton(
             bar, text="⚡  Analytics", width=120, height=34,
             fg_color="#2a1050", hover_color="#5c35cc",
             border_color=PUR, border_width=1,
             font=("Segoe UI",11), text_color=PUR,
             command=lambda: AnalyticsWindow(self, self.db))
-        self._analytics_btn.pack(side="right", padx=4)
+        self._analytics_btn.pack(side="right", padx=(4,14))
 
         ctk.CTkButton(
             bar, text="🔒  Reset", width=100, height=34,
@@ -941,29 +951,30 @@ class ICTApp(ctk.CTk):
         frame = ctk.CTkFrame(parent, fg_color=BG, corner_radius=0)
 
         hdr = ctk.CTkFrame(frame, fg_color=S2, corner_radius=0,
-                            border_width=1, border_color=BD, height=48)
+                            border_width=1, border_color=BD, height=50)
         hdr.pack(fill="x"); hdr.pack_propagate(False)
         ctk.CTkLabel(hdr, text="  ALL REPORTS",
                      font=("Segoe UI",11,"bold"), text_color=INFO).pack(side="left",padx=14)
         self._reports_count = ctk.CTkLabel(hdr, text="",
                                             font=("Segoe UI",18), text_color=MUT)
         self._reports_count.pack(side="right", padx=14)
-        ctk.CTkButton(hdr, text="↻  Refresh", width=90, height=30,
-                       fg_color=S3, hover_color=S1, border_color=BD, border_width=1,
-                       font=("Segoe UI",10), text_color=MUT,
-                       command=self._refresh_reports).pack(side="right",padx=4)
+        ctk.CTkButton(hdr, text="↻  Refresh", width=110, height=32,
+                       fg_color=S3, hover_color=S1, border_color=INFO, border_width=1,
+                       font=("Segoe UI",11,"bold"), text_color=TXT,
+                       command=self._recount_and_refresh).pack(side="right",padx=8)
 
         # Filter bar
         fbar = ctk.CTkFrame(frame, fg_color=S1, corner_radius=0,
-                             border_width=1, border_color=BD, height=40)
+                             border_width=1, border_color=BD, height=46)
         fbar.pack(fill="x"); fbar.pack_propagate(False)
         ctk.CTkLabel(fbar, text="  Filter by board:",
-                     font=("Segoe UI",9), text_color=MUT).pack(side="left",padx=8)
+                     font=("Segoe UI",11,"bold"), text_color=TXT).pack(side="left",padx=8)
         self._filter_var = tk.StringVar(value="All Boards")
         self._filter_menu = ctk.CTkOptionMenu(
             fbar, variable=self._filter_var, values=["All Boards"],
             fg_color=S3, button_color=BD, button_hover_color=S1,
-            text_color=TXT, font=("Courier New",10), width=200,
+            text_color=TXT, font=("Segoe UI",11), width=220, height=32,
+            dropdown_font=("Segoe UI",11),
             command=lambda _: self._refresh_reports())
         self._filter_menu.pack(side="left", padx=4)
 
@@ -976,7 +987,7 @@ class ICTApp(ctk.CTk):
                     font=("Segoe UI",12,"bold"), relief="flat", padding=(10,8))
         s.map("Rep.Treeview", background=[("selected",S1)])
         s.layout("Rep.Treeview",[("Rep.Treeview.treearea",{"sticky":"nswe"})])
-        cols = ("ID","Board","Serial","Date","Total","Pass","Fail","Rate","Status","Folder")
+        cols = ("ID","Board","Serial","Test Date","Test Time","Rate","Status","Folder")
         tf = tk.Frame(frame, bg=BG); tf.pack(fill="both", expand=True, padx=8, pady=8)
         sby = ttk.Scrollbar(tf, orient="vertical")
         sbx = ttk.Scrollbar(tf, orient="horizontal")
@@ -987,14 +998,21 @@ class ICTApp(ctk.CTk):
         sbx.config(command=self._rep_tv.xview)
         sby.pack(side="right",fill="y"); sbx.pack(side="bottom",fill="x")
         self._rep_tv.pack(fill="both", expand=True)
-        for col, w in zip(cols,[50,200,180,160,80,70,70,90,90,500]):
-            self._rep_tv.heading(col, text=col)
-            self._rep_tv.column(col, width=w, anchor="w", minwidth=50)
+        # heading and cell text share the same anchor so columns line up
+        widths  = [60,300,220,150,130,110,120,160]
+        anchors = ["center","w","w","center","center","center","center",
+                   "center"]
+        for col, w, a in zip(cols, widths, anchors):
+            self._rep_tv.heading(col, text=col, anchor=a)
+            self._rep_tv.column(col, width=w, anchor=a, minwidth=50,
+                                stretch=(col == "Board"))
         self._rep_tv.tag_configure("pass", foreground=PASS)
         self._rep_tv.tag_configure("fail", foreground=FAIL)
         self._rep_tv.bind("<<TreeviewSelect>>", lambda e: self._rep_select(e))
         self._rep_tv.bind("<Double-1>", lambda e: self._rep_double_click(e))
-        ctk.CTkLabel(frame, text="Click a row to select · Double-click to view details",
+        self._rep_tv.bind("<ButtonRelease-1>", self._rep_click_folder)
+        self._rep_tv.bind("<Motion>", self._rep_hover)
+        ctk.CTkLabel(frame, text="Click a row to select · Double-click to view details · Click 📂 Open to go to the ICT_Reports folder",
                      font=("Segoe UI",9), text_color=DIM).pack(pady=(0,4))
         return frame
 
@@ -1108,19 +1126,9 @@ class ICTApp(ctk.CTk):
         self._pages[key].pack(fill="both", expand=True)
         self._tab_btns[key].configure(text_color=INFO, fg_color=S2)
         self._active_page = key
-        self._sync_pdf_button()
         if key == "dashboard":   self._pages["dashboard"].refresh()
         elif key == "reports":   self._refresh_reports()
         elif key == "search":    self._pages["search"].refresh()
-
-    def _sync_pdf_button(self):
-        """Save PDF is only visible while the Reports page is open."""
-        if self._active_page == "reports":
-            if not self._pdf_btn.winfo_ismapped():
-                self._pdf_btn.pack(side="right", padx=(4,14),
-                                   before=self._analytics_btn)
-        else:
-            self._pdf_btn.pack_forget()
 
     # ── WATCHER ───────────────────────────────────────────────────
     def _set_watch_folder(self):
@@ -1223,7 +1231,6 @@ class ICTApp(ctk.CTk):
             return
         self._show_page("console_frame")
         self._gen_btn.configure(state="disabled", text="Processing…")
-        self._pdf_btn.configure(state="disabled")
         for b in self._chart_btns: b.configure(state="disabled", text_color=MUT)
         self._con.clear()
         self._con.set_status("running…", INFO)
@@ -1279,7 +1286,6 @@ class ICTApp(ctk.CTk):
         self._set_card(self._cards["Test Time"],   str(s.get("test_time","—")))
         self._tables_panel.populate(data)
         for b in self._chart_btns: b.configure(state="normal", text_color=INFO)
-        self._pdf_btn.configure(state="normal")
         fd = data.get("failed_detail",[])
         chips = [(f"⚠ {len(fd)} component failures","fail")] if fd else [("✓ All passed","pass")]
         for ins in data.get("insights",[]): chips.append((ins[:65],"warn"))
@@ -1321,12 +1327,70 @@ class ICTApp(ctk.CTk):
             tag = "pass" if r["status"]=="PASS" else "fail"
             self._rep_tv.insert("","end", values=(
                 r["id"], r["board_name"], r["serial"],
-                r["timestamp"][:16] if r["timestamp"] else "—",
-                r["total"], r["passed"], r["failed"],
+                (r["timestamp"] or "")[:10] or "—",
+                (r["timestamp"] or "")[11:19] or "—",
                 f"{r['pass_rate']:.1f}%", r["status"],
-                r.get("report_folder","—")),
+                "📂 Open"),
                 tags=(tag,))
         self._reports_count.configure(text=f"{len(runs)} REPORT(S)")
+
+    def _show_recount_status(self):
+        """Tell the user when saved reports were recounted / could not be."""
+        res = getattr(self, "_recount_result", None)
+        if not res:
+            return
+        updated, skipped = res
+        if updated or skipped:
+            msg = f"Recounted {updated} report(s)"
+            if skipped:
+                msg += (f" · {skipped} kept old numbers (ICT file moved, "
+                        f"changed or missing)")
+            self._wbar.set_status(msg, WARN if skipped else PASS)
+
+    def _recount_and_refresh(self):
+        """Refresh button: recount saved reports with the current parser, then reload."""
+        try:
+            self._recount_result = self.db.refresh_outdated_runs(self.parser)
+        except Exception as e:
+            self._recount_result = None
+            print(f"[Refresh] Recount failed: {e}")
+        self._refresh_reports()
+        self._show_recount_status()
+
+    def _open_run_folder(self, run_id: int = None):
+        """Open the ICT_Reports folder."""
+        try:
+            from db_manager import OUTPUT_ROOT
+        except Exception:
+            OUTPUT_ROOT = ""
+        folder = os.path.normpath(self.cfg.output_root or OUTPUT_ROOT)
+        try:
+            os.makedirs(folder, exist_ok=True)
+            if sys.platform.startswith("win"):
+                os.startfile(folder)
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", folder])
+            else:
+                subprocess.Popen(["xdg-open", folder])
+        except Exception as e:
+            messagebox.showerror("Open Folder", str(e))
+
+    def _rep_click_folder(self, event):
+        """Clicking the 'Folder' cell opens that report's folder."""
+        tv = self._rep_tv
+        if tv.identify_region(event.x, event.y) != "cell":
+            return
+        if tv.identify_column(event.x) != f"#{len(tv['columns'])}":
+            return
+        row = tv.identify_row(event.y)
+        if row:
+            self._open_run_folder(int(tv.item(row)["values"][0]))
+
+    def _rep_hover(self, event):
+        tv = self._rep_tv
+        on_btn = (tv.identify_region(event.x, event.y) == "cell" and
+                  tv.identify_column(event.x) == f"#{len(tv['columns'])}")
+        tv.configure(cursor="hand2" if on_btn else "")
 
     def _rep_select(self, event):
         """Single-click: load run data so Save PDF works."""
@@ -1370,7 +1434,6 @@ class ICTApp(ctk.CTk):
             "parse_log":       [],
             "run_folder":      r.get("report_folder", ""),
         }
-        self._pdf_btn.configure(state="normal")
 
     def _view_run(self, run_id: int):
         """Open run detail popup AND load data."""
@@ -1422,13 +1485,24 @@ class ICTApp(ctk.CTk):
                                 parent=parent)
             return
         s = self._data["summary"]
-        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        # File name carries the TEST date/time; dialog opens in the report folder
+        try:
+            ts = datetime.datetime.fromisoformat(s.get("timestamp","")).strftime("%Y%m%d_%H%M%S")
+        except Exception:
+            ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         default_name = f"ICT_{s['board_name']}_{s['serial']}_{ts}.pdf"
+        folder = self._data.get("run_folder") or ""
+        try:
+            if folder:
+                os.makedirs(folder, exist_ok=True)
+        except Exception:
+            folder = ""
         path = filedialog.asksaveasfilename(
             parent=parent,
             title="Save PDF Report",
             defaultextension=".pdf",
             filetypes=[("PDF files","*.pdf")],
+            initialdir=folder or None,
             initialfile=default_name)
         if not path:
             return
@@ -1542,8 +1616,7 @@ class ICTApp(ctk.CTk):
             os.makedirs(output_root, exist_ok=True)
             self.db = DBManager()
             self._data = None
-            self._pdf_btn.configure(state="disabled")
-
+    
             # Update DB reference in all pages
             if "dashboard" in self._pages:
                 self._pages["dashboard"].db = self.db

@@ -1,6 +1,6 @@
 """
 ICT PDF Report Generator v6.0
-8 charts with summaries, no component tables. One-click export.
+8 charts with summaries plus a failed-components table (what failed and why).
 """
 import os, io, datetime
 import numpy as np
@@ -162,7 +162,7 @@ class ReportGenerator:
             [kp("Status"), vp(s["status"], True, sc),
              kp("Pass Rate"), vp(f"{rt:.1f}%", True, rc)],
             [kp("Total Tested"), vp(str(s["total"])),
-             kp("Timestamp"), vp(s.get("timestamp", "")[:19])],
+             kp("Test Time"), vp(s.get("timestamp", "")[:19].replace("T", " "))],
             [kp("Passed"), vp(str(s["passed"]), True, C("pass")),
              kp("Failed"), vp(str(s["failed"]), True,
                               C("fail") if s["failed"] > 0 else C("pass"))],
@@ -182,9 +182,13 @@ class ReportGenerator:
         story.append(Spacer(1, 5 * mm))
 
         # General summary
-        if s["status"] == "PASS":
+        if s["status"] == "PASS" and s["failed"] == 0:
             gen = (f"Board {s['board_name']} (Serial: {s['serial']}) passed ICT with a "
                    f"{rt:.1f}% pass rate. All {s['total']} tested within tolerance. No rework required.")
+        elif s["status"] == "PASS":
+            gen = (f"Board {s['board_name']} (Serial: {s['serial']}) was marked PASS by the "
+                   f"tester, but {s['failed']} of {s['total']} test(s) are flagged FAIL "
+                   f"(pass rate {rt:.1f}%). See the failed components below.")
         else:
             fp = round(s["failed"] / s["total"] * 100, 1) if s["total"] > 0 else 0
             gen = (f"Board {s['board_name']} (Serial: {s['serial']}) failed ICT with a "
@@ -196,6 +200,9 @@ class ReportGenerator:
             story.append(Paragraph(f"&#9632; {ins}", ST["warn"]))
         story.append(Spacer(1, 5 * mm))
         story.append(HRFlowable(width="100%", thickness=1, color=C("bd"), spaceAfter=8))
+
+        # Failed components: which part, and why
+        story.extend(self._failed_section(data, ST))
 
         # 8 Charts
         charts = self._build_charts(data)
@@ -228,6 +235,69 @@ class ReportGenerator:
 
         doc.build(story, onFirstPage=_page_bg, onLaterPages=_page_bg)
         return path
+
+    @staticmethod
+    def _why(c):
+        """Reason a component failed (falls back to limits for older saved runs)."""
+        note = (c.get("note") or "").strip()
+        if note and note not in ("Out of tolerance", "Flagged FAIL by tester"):
+            return note
+        m = c.get("measured", "—")
+        lo = c.get("lower_limit", "—")
+        hi = c.get("upper_limit", "—")
+        if m not in ("—", "NA") and (lo not in ("—", "NA") or hi not in ("—", "NA")):
+            return f"Measured {m} is outside the limits {lo} to {hi}"
+        return note or "Flagged FAIL by tester"
+
+    def _failed_section(self, data, ST):
+        """'FAILED COMPONENTS' table: component, type, values and reason."""
+        from xml.sax.saxutils import escape
+        fails = data.get("failed_detail") or [
+            c for c in data.get("components", []) if c.get("status") == "FAIL"]
+        out = [Paragraph("FAILED COMPONENTS - WHAT FAILED AND WHY", ST["section"])]
+        if not fails:
+            out.append(Paragraph("No individual component failures were recorded.",
+                                 ST["body"]))
+            out.append(Spacer(1, 4 * mm))
+            return out
+
+        def cell(t, bold=False, color=None, mono=False):
+            font = ("Courier-Bold" if bold else "Courier") if mono else \
+                   ("Helvetica-Bold" if bold else "Helvetica")
+            return Paragraph(escape(str(t)), ParagraphStyle(
+                "fc", fontSize=8, fontName=font, leading=10,
+                textColor=color or C("txt")))
+
+        rows = [[cell(h, True, C("info")) for h in
+                 ("#", "Component", "Type", "Measured", "Limits (low / high)",
+                  "Why it failed")]]
+        for i, c in enumerate(fails, 1):
+            lo = c.get("lower_limit") or "—"
+            hi = c.get("upper_limit") or "—"
+            limits = "NA" if lo == "NA" and hi == "NA" else f"{lo} / {hi}"
+            rows.append([
+                cell(i, color=C("muted")),
+                cell(c["ref"], True, C("fail"), mono=True),
+                cell(c.get("type", "")),
+                cell(c.get("measured", "—"), mono=True),
+                cell(limits, mono=True),
+                cell(self._why(c)),
+            ])
+        t = Table(rows, colWidths=[8*mm, 28*mm, 20*mm, 20*mm, 33*mm, None],
+                  repeatRows=1)
+        t.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), C("s1")),
+            ("BACKGROUND", (0, 1), (-1, -1), C("s2")),
+            ("GRID", (0, 0), (-1, -1), 0.5, C("bd")),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("TOPPADDING", (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ("LEFTPADDING", (0, 0), (-1, -1), 5),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+        ]))
+        out.append(t)
+        out.append(Spacer(1, 6 * mm))
+        return out
 
     def _build_charts(self, data):
         s = data["summary"]

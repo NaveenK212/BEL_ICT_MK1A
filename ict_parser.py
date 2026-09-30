@@ -9,7 +9,7 @@ import os, re, csv, datetime
 class ICTParser:
     # Bump whenever parsing rules change: the app re-parses stored runs
     # saved by an older version automatically at startup.
-    VERSION = 9
+    VERSION = 14
 
     # ── PUBLIC ENTRY POINT ────────────────────────────────────────
     def parse(self, filepath: str) -> dict:
@@ -70,6 +70,10 @@ class ICTParser:
                     meta["serial_raw"] = parts[1].strip()
                     meta["serial"] = self._clean_serial(
                         parts[1].strip(), meta.get("board_name", ""))
+                if len(parts) > 3:
+                    dt = self._parse_test_dt(parts[3])
+                    if dt and "test_dt" not in meta:
+                        meta["test_dt"] = dt
                 if len(parts) > 2:
                     code = parts[2].strip(" }")
                     if code != "00":
@@ -84,7 +88,8 @@ class ICTParser:
                 code    = parts[2].strip(" }") if len(parts) > 2 else "00"
                 base, _, tag = ref_raw.partition("%")   # "k1%unp%jp1" -> K1
                 blk = {"base": base.upper(), "tag": tag.replace("%", " "),
-                       "tester_fail": code != "00", "meas": [], "tjet": []}
+                       "tester_fail": code != "00", "code": code,
+                       "meas": [], "tjet": []}
                 blocks.append(blk)
 
             # Testjet device result:  {@TJET|00|0000|u5   (00 = PASS, else FAIL)
@@ -108,6 +113,20 @@ class ICTParser:
         #  ACTIVE  (DIO ZEN NFE PFE MEA): one row per block, limits shown as NA,
         #      result taken ONLY from the block code (00 = PASS, else FAIL).
         ACTIVE = ("DIO", "ZEN", "NFE", "PFE", "MEA")
+
+        # The board result (@BTEST code) is authoritative: when the tester
+        # passed the board (00), block-level codes do not make a component
+        # fail. Only a measurement really outside its limits still does.
+        if meta.get("board_code") == "00":
+            ignored = sum(1 for b in blocks
+                          if b["tester_fail"] or any(c != "00" for c, _ in b["tjet"]))
+            for b in blocks:
+                b["tester_fail"] = False
+                b["tjet"] = [("00", r) for _, r in b["tjet"]]
+            if ignored:
+                parse_log.append(
+                    f"  → Board result is PASS (@BTEST 00): {ignored} block(s) "
+                    f"with a non-00 block code were counted as PASS")
         entries = []
         for b in blocks:
             act = [m for m in b["meas"] if m["kind"] in ACTIVE]
@@ -117,9 +136,11 @@ class ICTParser:
             any_out = any(ok is False for ok in oks)
             for m, ok in zip(pas, oks):
                 if ok is False:
-                    status, note = "FAIL", "Out of tolerance"
+                    status, note = "FAIL", self._limit_reason(m)
                 elif b["tester_fail"] and not any_out and not act:
-                    status, note = "FAIL", "Flagged FAIL by tester"
+                    status = "FAIL"
+                    note = (f"Readings within limits, but tester marked "
+                            f"this block FAIL (code {b['code']})")
                 else:
                     status, note = "PASS", ""
                 entries.append((b, m, status, note))
@@ -132,12 +153,14 @@ class ICTParser:
                 summ  = {"meas": None, "label": "", "kind": kind, "active": True,
                          "nominal": None, "upper": None, "lower": None}
                 if b["tester_fail"]:
-                    status, note = "FAIL", "Flagged FAIL by tester"
+                    status, note = "FAIL", self._active_reason(kind, b, act)
                 else:
                     status, note = "PASS", ""
                 entries.append((b, summ, status, note))
             if not b["meas"] and not b["tjet"] and b["tester_fail"]:
-                entries.append((b, None, "FAIL", "Flagged FAIL by tester"))
+                entries.append((b, None, "FAIL",
+                                f"Tester marked this block FAIL (code {b['code']}), "
+                                f"no measurement recorded"))
 
             # TESTJET: one summary row (block code) + one row per device
             if b["tjet"]:
@@ -146,13 +169,16 @@ class ICTParser:
                           "nominal": None, "upper": None, "lower": None}
                 entries.append((b, dict(base_m, tj_summary=True),
                                 "FAIL" if bad else "PASS",
-                                "Flagged FAIL by tester" if bad else ""))
+                                (f"Testjet FAILED (code {b['code']})")
+                                if bad else ""))
                 for tcode, tref in b["tjet"]:
                     dev = {"base": tref.upper(), "tag": "testjet",
                            "tester_fail": tcode != "00", "meas": [], "tjet": []}
                     entries.append((dev, dict(base_m, tj_device=True),
                                     "FAIL" if tcode != "00" else "PASS",
-                                    "Flagged FAIL by tester" if tcode != "00" else ""))
+                                    (f"Testjet FAILED on {tref.upper()} "
+                                     f"(code {tcode})")
+                                    if tcode != "00" else ""))
 
         # The tester may split one part (e.g. U16%diode) over several blocks:
         # merge active rows with the same ref + tag; FAIL if any part failed.
@@ -195,6 +221,7 @@ class ICTParser:
                 c = self._make_comp(ref, status, None, None, None, None,
                                     note=note,
                                     ctype=self._infer_type(b["base"]))
+            c["base"] = b["base"]          # physical part this row belongs to
             components.append(c)
             if status == "FAIL":
                 parse_log.append(
@@ -246,6 +273,54 @@ class ICTParser:
                 pass
         return {"meas": meas, "label": label, "kind": kind,
                 "nominal": nominal, "upper": upper, "lower": lower}
+
+    # ── FAILURE REASONS (shown in the "Why it failed" column) ─────
+    _KIND_NAME = {"RES": "Resistor", "CAP": "Capacitor", "JUM": "Jumper",
+                  "DIO": "Diode", "ZEN": "Zener diode", "NFE": "N-FET",
+                  "PFE": "P-FET", "MEA": "Measurement", "TJ": "Testjet"}
+
+    def _limit_reason(self, m):
+        """Plain-English reason for a passive part measured out of limits."""
+        meas, kind = m["meas"], m["kind"]
+        vals = [v for v in (m["upper"], m["lower"]) if v is not None]
+        hi, lo = max(vals), min(vals)
+        if hi >= 1e90: hi = None
+        if lo <= -1e90: lo = None
+        if lo is not None and meas < lo:
+            side, lim, word = "BELOW the lower limit", lo, "low"
+        else:
+            side, lim, word = "ABOVE the upper limit", hi, "high"
+        txt = f"Measured {self._fmt(meas)} is {side} of {self._fmt(lim)}"
+        nom = m["nominal"]
+        if nom is not None and abs(nom) < 1e90 and nom != 0:
+            pct = (meas - nom) / abs(nom) * 100
+            txt += f" (nominal {self._fmt(nom)}, {pct:+.1f}%)"
+        return txt
+
+    def _active_reason(self, kind, b, act):
+        """Reason for a diode / zener / transistor / MEA block the tester failed."""
+        name = self._KIND_NAME.get(kind, "Active")
+        txt = f"{name} test FAILED (tester code {b['code']})"
+        for m in act:
+            if kind == "MEA" and m["kind"] == "MEA" and \
+                    self._in_limits(m["meas"], m["upper"], m["lower"]) is False:
+                vals = [v for v in (m["upper"], m["lower"]) if v is not None]
+                txt += (f"; {m['label'] or 'reading'} = {self._fmt(m['meas'])} "
+                        f"(limits {self._fmt_limit(min(vals))} to "
+                        f"{self._fmt_limit(max(vals))})")
+                break
+        return txt
+
+    @staticmethod
+    def _parse_test_dt(raw):
+        """@BTEST test start time 'YYMMDDhhmmss' -> datetime, or None."""
+        s = (raw or "").strip(" }")
+        if len(s) != 12 or not s.isdigit():
+            return None
+        try:
+            return datetime.datetime.strptime(s, "%y%m%d%H%M%S")
+        except ValueError:
+            return None
 
     @staticmethod
     def _in_limits(meas, upper, lower):
@@ -468,9 +543,16 @@ class ICTParser:
     # ── BUILD RESULT DICT ─────────────────────────────────────────
     def _build(self, meta, components,
                parse_log, filepath, fmt) -> dict:
-        total  = len(components)
-        passed = sum(1 for c in components if c["status"] == "PASS")
-        failed = total - passed
+        # Count PHYSICAL COMPONENTS, not test rows: a part that has several
+        # measurements (or a testjet + device rows) counts once, and it is
+        # FAIL if any of its tests failed.
+        parts = {}
+        for c in components:
+            key = c.get("base") or c["ref"]
+            parts[key] = parts.get(key, False) or c["status"] == "FAIL"
+        total  = len(parts)
+        failed = sum(1 for bad in parts.values() if bad)
+        passed = total - failed
         rate   = round(passed / total * 100, 2) if total else 0
 
         failed_detail = [c for c in components if c["status"] == "FAIL"]
@@ -512,6 +594,16 @@ class ICTParser:
         else:
             board_status = "FAIL" if failed > 0 else "PASS"
 
+        # Test time: the tester's own start time when the file has one,
+        # otherwise the file's last-modified time, otherwise now.
+        test_dt = meta.get("test_dt")
+        if test_dt is None:
+            try:
+                test_dt = datetime.datetime.fromtimestamp(
+                    os.path.getmtime(filepath))
+            except Exception:
+                test_dt = datetime.datetime.now()
+
         insights = []
         if failed > 0 and board_status == "FAIL":
             insights.append(
@@ -543,8 +635,8 @@ class ICTParser:
                 "failed":     failed,
                 "pass_rate":  rate,
                 "status":     board_status,
-                "test_time":  datetime.datetime.now().strftime("%H:%M:%S"),
-                "timestamp":  datetime.datetime.now().isoformat(),
+                "test_time":  test_dt.strftime("%H:%M:%S"),
+                "timestamp":  test_dt.isoformat(timespec="seconds"),
             },
             "components":       components,
             "failed_detail":    failed_detail,

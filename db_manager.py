@@ -117,14 +117,23 @@ class DBManager:
         return [r["filepath"] for r in rows]
 
     # ── SAVE RUN ──────────────────────────────────────────────────
+    @staticmethod
+    def make_run_folder(board_name: str, serial: str, timestamp: str) -> str:
+        """<ICT_Reports>/<board>/<serial>_<test date>_<test time>"""
+        try:
+            ts = datetime.datetime.fromisoformat(timestamp).strftime("%Y%m%d_%H%M%S")
+        except Exception:
+            ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        safe_board  = re.sub(r'[\\/:*?"<>|]', "_", board_name)
+        safe_serial = re.sub(r'[\\/:*?"<>|]', "_", serial)
+        return os.path.join(OUTPUT_ROOT, safe_board, f"{safe_serial}_{ts}")
+
     def save_run(self, data: dict) -> int:
         s  = data["summary"]
-        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-
-        safe_board  = re.sub(r'[\\/:*?"<>|]', "_", s["board_name"])
-        safe_serial = re.sub(r'[\\/:*?"<>|]', "_", s["serial"])
-        run_folder  = os.path.join(OUTPUT_ROOT, safe_board, f"{safe_serial}_{ts}")
-        # Folder is NOT created here — only when user explicitly saves a PDF
+        run_folder = self.make_run_folder(
+            s["board_name"], s["serial"],
+            s.get("timestamp", datetime.datetime.now().isoformat()))
+        # Folder is created only when the user opens it or saves a PDF
 
         with self._connect() as con:
             cur = con.execute(
@@ -196,9 +205,13 @@ class DBManager:
                      for c in data.get("components", [])])
                 con.execute(
                     """UPDATE runs SET total=?, passed=?, failed=?, pass_rate=?,
-                       status=?, parser_version=? WHERE id=?""",
+                       status=?, parser_version=?, timestamp=?, report_folder=?
+                       WHERE id=?""",
                     (s["total"], s["passed"], s["failed"], s["pass_rate"],
-                     s["status"], ver, row["id"]))
+                     s["status"], ver, s["timestamp"],
+                     self.make_run_folder(s["board_name"], s["serial"],
+                                          s["timestamp"]),
+                     row["id"]))
             updated += 1
         return updated, skipped
 
