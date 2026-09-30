@@ -9,7 +9,7 @@ import os, re, csv, datetime
 class ICTParser:
     # Bump whenever parsing rules change: the app re-parses stored runs
     # saved by an older version automatically at startup.
-    VERSION = 8
+    VERSION = 9
 
     # ── PUBLIC ENTRY POINT ────────────────────────────────────────
     def parse(self, filepath: str) -> dict:
@@ -84,8 +84,17 @@ class ICTParser:
                 code    = parts[2].strip(" }") if len(parts) > 2 else "00"
                 base, _, tag = ref_raw.partition("%")   # "k1%unp%jp1" -> K1
                 blk = {"base": base.upper(), "tag": tag.replace("%", " "),
-                       "tester_fail": code != "00", "meas": []}
+                       "tester_fail": code != "00", "meas": [], "tjet": []}
                 blocks.append(blk)
+
+            # Testjet device result:  {@TJET|00|0000|u5   (00 = PASS, else FAIL)
+            elif "@TJET" in line and blk is not None:
+                tp = line.lstrip("{").split("|")
+                if len(tp) >= 4:
+                    tcode = tp[1].strip(" }")
+                    tref  = tp[3].strip(" }")
+                    if tref:
+                        blk["tjet"].append((tcode, tref))
 
             # Any Agilent measurement line (CAP RES JUM DIO ZEN NFE PFE MEA ...)
             elif "@A-" in line and blk is not None:
@@ -127,8 +136,23 @@ class ICTParser:
                 else:
                     status, note = "PASS", ""
                 entries.append((b, summ, status, note))
-            if not b["meas"] and b["tester_fail"]:
+            if not b["meas"] and not b["tjet"] and b["tester_fail"]:
                 entries.append((b, None, "FAIL", "Flagged FAIL by tester"))
+
+            # TESTJET: one summary row (block code) + one row per device
+            if b["tjet"]:
+                bad = b["tester_fail"] or any(c != "00" for c, _ in b["tjet"])
+                base_m = {"meas": None, "label": "", "kind": "TJ", "active": True,
+                          "nominal": None, "upper": None, "lower": None}
+                entries.append((b, dict(base_m, tj_summary=True),
+                                "FAIL" if bad else "PASS",
+                                "Flagged FAIL by tester" if bad else ""))
+                for tcode, tref in b["tjet"]:
+                    dev = {"base": tref.upper(), "tag": "testjet",
+                           "tester_fail": tcode != "00", "meas": [], "tjet": []}
+                    entries.append((dev, dict(base_m, tj_device=True),
+                                    "FAIL" if tcode != "00" else "PASS",
+                                    "Flagged FAIL by tester" if tcode != "00" else ""))
 
         # The tester may split one part (e.g. U16%diode) over several blocks:
         # merge active rows with the same ref + tag; FAIL if any part failed.
@@ -153,7 +177,9 @@ class ICTParser:
         components = []
         for b, m, status, note in entries:
             ref = b["base"]
-            if counts[ref] > 1:
+            if m and m.get("tj_device"):
+                ref = f"{ref} (testjet)"
+            elif counts[ref] > 1:
                 bits = [t for t in (b["tag"], m["label"] if m else "") if t]
                 if bits:
                     ref = f"{ref} ({' / '.join(bits)})"
@@ -352,6 +378,7 @@ class ICTParser:
         """Component type from the @A-xxx measurement kind first,
         falling back to the reference-designator prefix."""
         b = base.lower()
+        if kind == "TJ": return "Testjet"
         if kind == "ZEN": return "Zener Diode"
         if kind in ("NFE", "PFE"): return "Transistor"
         if kind == "DIO":
@@ -461,6 +488,7 @@ class ICTParser:
             "Transistor": "In-Circuit", "Diode": "In-Circuit",
             "Connector": "Continuity", "Transformer": "In-Circuit",
             "Zener Diode": "In-Circuit", "Jumper Resistor": "Resistance",
+            "Testjet": "Testjet",
             "Component": "Other",
         }
         test_types: dict = {}

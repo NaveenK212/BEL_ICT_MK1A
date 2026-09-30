@@ -16,16 +16,20 @@ try:
         HRFlowable, Image, KeepTogether, PageBreak
     )
     RL_OK = True
-except ImportError:
+    RL_ERR = ""
+except ImportError as _e:
     RL_OK = False
+    RL_ERR = str(_e)
 
 try:
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     MPL_OK = True
-except ImportError:
+    MPL_ERR = ""
+except ImportError as _e:
     MPL_OK = False
+    MPL_ERR = str(_e)
 
 import sys as _sys
 
@@ -87,8 +91,17 @@ class ReportGenerator:
         return Image(buf, width=pw, height=pw * aspect)
 
     def generate(self, data: dict, save_path: str = None) -> str:
+        # Never silently write a .txt and call it a PDF: fail loudly instead.
         if not RL_OK:
-            return self._txt_fallback(data)
+            raise RuntimeError(
+                "Cannot create a PDF: the 'reportlab' library could not be "
+                f"loaded ({RL_ERR}).\n\nInstall it in the same Python that runs "
+                "this app:\n    pip install reportlab\nthen restart the app.")
+        if not MPL_OK:
+            raise RuntimeError(
+                "Cannot create a PDF: the 'matplotlib' library could not be "
+                f"loaded ({MPL_ERR}).\n\nInstall it in the same Python that runs "
+                "this app:\n    pip install matplotlib\nthen restart the app.")
         return self._pdf(data, save_path)
 
     def _pdf(self, data: dict, save_path: str = None) -> str:

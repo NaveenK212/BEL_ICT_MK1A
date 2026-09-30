@@ -168,7 +168,7 @@ class TablesPanel(ctk.CTkFrame):
         ctk.CTkEntry(sbar, textvariable=self._q, width=360, height=32,
                      font=("Courier New",12), fg_color=S3, text_color=TXT,
                      border_color=BD,
-                     placeholder_text="Type ref, type or status (e.g. AR11, Resistor, FAIL)..."
+                     placeholder_text="Type ref, test type or status (e.g. AR11, Resistor, FAIL)..."
                      ).pack(side="left", padx=4)
         ctk.CTkButton(sbar, text="⌫ Clear", width=70, height=32,
                       fg_color=S3, hover_color=S1, border_color=BD, border_width=1,
@@ -184,11 +184,11 @@ class TablesPanel(ctk.CTkFrame):
             segmented_button_unselected_hover_color=BD, text_color=TXT)
         self.tabs.pack(fill="both", expand=True)
         self.tv_comp  = self._tab("Component Results",
-            ["Ref","Type","Nominal","Measured","Lower Limit","Upper Limit","Status"],
-            [300,130,130,130,120,120,90])
+            ["Ref","Test Type","Measured","Lower Limit","Upper Limit","Status"],
+            [320,150,150,140,140,100])
         self.tv_fail  = self._tab("Failed Components",
-            ["Ref","Type","Nominal","Measured","Lower Limit","Upper Limit","Note"],
-            [300,130,130,130,120,120,240])
+            ["Ref","Test Type","Measured","Lower Limit","Upper Limit","Note"],
+            [320,150,150,140,140,260])
 
     def _tab(self, name, cols, widths):
         tab = self.tabs.add(name)
@@ -217,13 +217,12 @@ class TablesPanel(ctk.CTkFrame):
 
     def _render(self):
         self._clear()
-        q = self._q.get().strip().lower()
+        q = self._q.get().strip().lower().replace(" ", "")   # "test jet" == "testjet"
 
         def match(c):
             if not q: return True
-            return (q in str(c.get("ref","")).lower() or
-                    q in str(c.get("type","")).lower() or
-                    q in str(c.get("status","")).lower())
+            def norm(k): return str(c.get(k,"")).lower().replace(" ", "")
+            return (q in norm("ref") or q in norm("type") or q in norm("status"))
 
         comps = self._data.get("components", [])
         fails = self._data.get("failed_detail", [])
@@ -232,13 +231,13 @@ class TablesPanel(ctk.CTkFrame):
 
         for c in shown_c:
             self.tv_comp.insert("","end", values=(
-                c["ref"],c["type"],c.get("nominal","—"),c.get("measured","—"),
+                c["ref"],c["type"],c.get("measured","—"),
                 c.get("lower_limit") or "—",c.get("upper_limit") or "—",
                 c["status"]),
                 tags=("pass" if c["status"]=="PASS" else "fail",))
         for c in shown_f:
             self.tv_fail.insert("","end", values=(
-                c["ref"],c["type"],c.get("nominal","—"),c.get("measured","—"),
+                c["ref"],c["type"],c.get("measured","—"),
                 c.get("lower_limit") or "—",c.get("upper_limit") or "—",
                 c.get("note") or "—"),
                 tags=("fail",))
@@ -739,6 +738,12 @@ class RunDetailPopup(ctk.CTkToplevel):
                        fg_color=S3, hover_color=FBG, border_color=BD, border_width=1,
                        font=("Segoe UI",10), text_color=MUT,
                        command=self.destroy).pack(side="right", padx=14)
+        ctk.CTkButton(hdr, text="📄  Save PDF", width=110, height=32,
+                       fg_color=WBG, hover_color="#4d3a00",
+                       border_color=WARN, border_width=1,
+                       font=("Segoe UI",10), text_color=WARN,
+                       command=lambda: self._save_pdf(parent, run_id)
+                       ).pack(side="right", padx=(0,4))
 
         # Fake data object for TablesPanel
         data = {
@@ -748,6 +753,11 @@ class RunDetailPopup(ctk.CTkToplevel):
         tp = TablesPanel(self)
         tp.pack(fill="both", expand=True)
         tp.populate(data)
+
+    def _save_pdf(self, app, run_id):
+        """Save PDF for THIS report (dialogs open above this popup)."""
+        app._load_run_data(run_id)
+        app._save_pdf(parent=self)
 
 
 # ── WATCHER STATUS BAR ────────────────────────────────────────────
@@ -855,26 +865,21 @@ class ICTApp(ctk.CTk):
                      font=("Segoe UI",10), text_color=MUT).pack(side="left", padx=8)
 
         # Right buttons
-        self._export_btn = ctk.CTkButton(
-            bar, text="⬇  Export XLSX", width=130, height=34,
-            fg_color=S3, hover_color=BG, border_color=BD2, border_width=1,
-            font=("Segoe UI",11), command=self._export_excel, state="disabled")
-        self._export_btn.pack(side="right", padx=(0,14))
-
         self._pdf_btn = ctk.CTkButton(
             bar, text="📄  Save PDF", width=120, height=34,
             fg_color=WBG, hover_color="#4d3a00",
             border_color=WARN, border_width=1,
             font=("Segoe UI",11), text_color=WARN,
             command=self._save_pdf, state="disabled")
-        self._pdf_btn.pack(side="right", padx=4)
+        self._pdf_btn.pack(side="right", padx=(4,14))
 
-        ctk.CTkButton(
+        self._analytics_btn = ctk.CTkButton(
             bar, text="⚡  Analytics", width=120, height=34,
             fg_color="#2a1050", hover_color="#5c35cc",
             border_color=PUR, border_width=1,
             font=("Segoe UI",11), text_color=PUR,
-            command=lambda: AnalyticsWindow(self, self.db)).pack(side="right",padx=4)
+            command=lambda: AnalyticsWindow(self, self.db))
+        self._analytics_btn.pack(side="right", padx=4)
 
         ctk.CTkButton(
             bar, text="🔒  Reset", width=100, height=34,
@@ -1103,9 +1108,19 @@ class ICTApp(ctk.CTk):
         self._pages[key].pack(fill="both", expand=True)
         self._tab_btns[key].configure(text_color=INFO, fg_color=S2)
         self._active_page = key
+        self._sync_pdf_button()
         if key == "dashboard":   self._pages["dashboard"].refresh()
         elif key == "reports":   self._refresh_reports()
         elif key == "search":    self._pages["search"].refresh()
+
+    def _sync_pdf_button(self):
+        """Save PDF is only visible while the Reports page is open."""
+        if self._active_page == "reports":
+            if not self._pdf_btn.winfo_ismapped():
+                self._pdf_btn.pack(side="right", padx=(4,14),
+                                   before=self._analytics_btn)
+        else:
+            self._pdf_btn.pack_forget()
 
     # ── WATCHER ───────────────────────────────────────────────────
     def _set_watch_folder(self):
@@ -1209,7 +1224,6 @@ class ICTApp(ctk.CTk):
         self._show_page("console_frame")
         self._gen_btn.configure(state="disabled", text="Processing…")
         self._pdf_btn.configure(state="disabled")
-        self._export_btn.configure(state="disabled")
         for b in self._chart_btns: b.configure(state="disabled", text_color=MUT)
         self._con.clear()
         self._con.set_status("running…", INFO)
@@ -1266,7 +1280,6 @@ class ICTApp(ctk.CTk):
         self._tables_panel.populate(data)
         for b in self._chart_btns: b.configure(state="normal", text_color=INFO)
         self._pdf_btn.configure(state="normal")
-        self._export_btn.configure(state="normal")
         fd = data.get("failed_detail",[])
         chips = [(f"⚠ {len(fd)} component failures","fail")] if fd else [("✓ All passed","pass")]
         for ins in data.get("insights",[]): chips.append((ins[:65],"warn"))
@@ -1316,7 +1329,7 @@ class ICTApp(ctk.CTk):
         self._reports_count.configure(text=f"{len(runs)} REPORT(S)")
 
     def _rep_select(self, event):
-        """Single-click: load run data so Save PDF / Export XLSX work."""
+        """Single-click: load run data so Save PDF works."""
         sel = self._rep_tv.selection()
         if not sel: return
         run_id = int(self._rep_tv.item(sel[0])["values"][0])
@@ -1358,7 +1371,6 @@ class ICTApp(ctk.CTk):
             "run_folder":      r.get("report_folder", ""),
         }
         self._pdf_btn.configure(state="normal")
-        self._export_btn.configure(state="normal")
 
     def _view_run(self, run_id: int):
         """Open run detail popup AND load data."""
@@ -1379,7 +1391,7 @@ class ICTApp(ctk.CTk):
     def _build_test_types(self, components):
         tm = {"Resistor":"Resistance","Capacitor":"Capacitance","Inductor":"Inductance",
               "IC":"In-Circuit","Transistor":"In-Circuit","Diode":"In-Circuit",
-              "Zener Diode":"In-Circuit","Jumper Resistor":"Resistance",
+              "Zener Diode":"In-Circuit","Jumper Resistor":"Resistance","Testjet":"Testjet",
               "Connector":"Continuity","Component":"Other"}
         tt = {}
         for c in components:
@@ -1403,14 +1415,17 @@ class ICTApp(ctk.CTk):
         return ins
 
     # ── SAVE PDF ──────────────────────────────────────────────────
-    def _save_pdf(self):
+    def _save_pdf(self, parent=None):
+        parent = parent or self
         if not self._data:
-            messagebox.showinfo("No Data","Select a report from the Reports tab first.")
+            messagebox.showinfo("No Data","Select a report from the Reports tab first.",
+                                parent=parent)
             return
         s = self._data["summary"]
         ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         default_name = f"ICT_{s['board_name']}_{s['serial']}_{ts}.pdf"
         path = filedialog.asksaveasfilename(
+            parent=parent,
             title="Save PDF Report",
             defaultextension=".pdf",
             filetypes=[("PDF files","*.pdf")],
@@ -1419,52 +1434,9 @@ class ICTApp(ctk.CTk):
             return
         try:
             out = self.reporter.generate(self._data, save_path=path)
-            messagebox.showinfo("Saved", f"PDF saved:\n{out}")
+            messagebox.showinfo("Saved", f"PDF saved:\n{out}", parent=parent)
         except Exception as e:
-            messagebox.showerror("PDF Error", str(e))
-
-    # ── EXPORT EXCEL ──────────────────────────────────────────────
-    def _export_excel(self):
-        if not self._data:
-            messagebox.showinfo("No Data","Generate a report first.")
-            return
-        try:
-            import openpyxl
-            from openpyxl.styles import Font
-            path = filedialog.asksaveasfilename(
-                defaultextension=".xlsx",
-                filetypes=[("Excel","*.xlsx")],
-                initialfile=f"ICT_{self._data['summary']['serial']}_{datetime.datetime.now().strftime('%Y%m%d')}.xlsx")
-            if not path: return
-            wb = openpyxl.Workbook()
-            ws = wb.active; ws.title="Summary"; s=self._data["summary"]
-            for r,(k,v) in enumerate([
-                ("Board",s["board_name"]),("Serial",s["serial"]),
-                ("Status",s["status"]),("Total",s["total"]),
-                ("Passed",s["passed"]),("Failed",s["failed"]),
-                ("Pass Rate",f"{s['pass_rate']:.1f}%"),
-                ("Timestamp",s.get("timestamp",""))],1):
-                ws.cell(r,1,k).font=Font(bold=True); ws.cell(r,2,v)
-            ws2=wb.create_sheet("Component Results")
-            ws2.append(["Ref","Type","Nominal","Measured","Lower Limit","Upper Limit","Deviation","Status"])
-            for c in self._data.get("components",[]):
-                ws2.append([c["ref"],c["type"],c.get("nominal","—"),
-                             c.get("measured","—"),
-                             c.get("lower_limit") or "—",c.get("upper_limit") or "—",
-                             c.get("deviation","—"),c["status"]])
-            ws3=wb.create_sheet("Failed Components")
-            ws3.append(["Ref","Type","Nominal","Measured","Lower Limit","Upper Limit","Deviation","Note"])
-            for c in self._data.get("failed_detail",[]):
-                ws3.append([c["ref"],c["type"],c.get("nominal","—"),
-                             c.get("measured","—"),
-                             c.get("lower_limit") or "—",c.get("upper_limit") or "—",
-                             c.get("deviation","—"),c.get("note","—")])
-            wb.save(path)
-            messagebox.showinfo("Exported",f"Saved:\n{path}")
-        except ImportError:
-            messagebox.showerror("Missing","pip install openpyxl")
-        except Exception as e:
-            messagebox.showerror("Export Error",str(e))
+            messagebox.showerror("PDF Error", str(e), parent=parent)
 
     # ── RESET DATA ─────────────────────────────────────────────────
     def _reset_data(self):
@@ -1571,7 +1543,6 @@ class ICTApp(ctk.CTk):
             self.db = DBManager()
             self._data = None
             self._pdf_btn.configure(state="disabled")
-            self._export_btn.configure(state="disabled")
 
             # Update DB reference in all pages
             if "dashboard" in self._pages:
