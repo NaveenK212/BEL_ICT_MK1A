@@ -1,7 +1,7 @@
 """
 Database manager — SQLite backend for ICT run history + processed file tracking.
 """
-import sqlite3, os, datetime, re, sys
+import sqlite3, os, datetime, re, sys, hashlib
 
 # App root: next to EXE if frozen, next to script if running from source
 if getattr(sys, 'frozen', False):
@@ -11,6 +11,18 @@ else:
 
 OUTPUT_ROOT = os.path.join(_APP_ROOT, "ICT_Reports")
 DB_PATH     = os.path.join(OUTPUT_ROOT, "ict_results.db")
+
+
+def _file_md5(path: str) -> str:
+    """MD5 of the whole file ('' if unreadable)."""
+    h = hashlib.md5()
+    try:
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                h.update(chunk)
+    except Exception:
+        return ""
+    return h.hexdigest()
 
 
 class DBManager:
@@ -74,6 +86,14 @@ class DBManager:
             cols = [r[1] for r in con.execute("PRAGMA table_info(runs)").fetchall()]
             if "report_folder" not in cols:
                 con.execute("ALTER TABLE runs ADD COLUMN report_folder TEXT")
+            if "parser_version" not in cols:
+                con.execute("ALTER TABLE runs ADD COLUMN parser_version INTEGER")
+            if "source_md5" not in cols:
+                con.execute("ALTER TABLE runs ADD COLUMN source_md5 TEXT")
+            ccols = [r[1] for r in con.execute("PRAGMA table_info(components)").fetchall()]
+            for col in ("lower_limit", "upper_limit"):
+                if col not in ccols:
+                    con.execute(f"ALTER TABLE components ADD COLUMN {col} TEXT")
 
     # ── PROCESSED FILES ───────────────────────────────────────────
     def is_processed(self, filepath: str, filehash: str = None) -> bool:
@@ -110,27 +130,77 @@ class DBManager:
             cur = con.execute(
                 """INSERT INTO runs
                    (board_name, serial, timestamp, total, passed, failed,
-                    pass_rate, status, filepath, report_folder)
-                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                    pass_rate, status, filepath, report_folder, parser_version,
+                    source_md5)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (s["board_name"], s["serial"],
                  s.get("timestamp", datetime.datetime.now().isoformat()),
                  s["total"], s["passed"], s["failed"],
                  s["pass_rate"], s["status"],
-                 data.get("filepath", ""), run_folder)
+                 data.get("filepath", ""), run_folder,
+                 data.get("parser_version", 0),
+                 _file_md5(data.get("filepath", "")))
             )
             run_id = cur.lastrowid
             con.executemany(
                 """INSERT INTO components
-                   (run_id, ref, type, nominal, measured, deviation, status, note)
-                   VALUES (?,?,?,?,?,?,?,?)""",
+                   (run_id, ref, type, nominal, measured, deviation, status, note,
+                    lower_limit, upper_limit)
+                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
                 [(run_id, c["ref"], c["type"], c.get("nominal",""),
                   c.get("measured",""), c.get("deviation",""),
-                  c["status"], c.get("note",""))
+                  c["status"], c.get("note",""),
+                  c.get("lower_limit","—"), c.get("upper_limit","—"))
                  for c in data.get("components", [])]
             )
 
         data["run_folder"] = run_folder
         return run_id
+
+    # ── RE-PARSE RUNS SAVED BY AN OLDER PARSER ────────────────────
+    def refresh_outdated_runs(self, parser) -> tuple:
+        """Re-parse stored runs saved by an older parser version, but ONLY
+        when the source file is still byte-for-byte the file that was
+        originally processed (full-file MD5 recorded at save time). Runs
+        whose file was moved, edited or replaced — or that have no recorded
+        fingerprint — are left untouched. Returns (updated, skipped)."""
+        ver = getattr(parser, "VERSION", 0)
+        with self._connect() as con:
+            rows = con.execute(
+                "SELECT id, filepath, source_md5 FROM runs "
+                "WHERE COALESCE(parser_version,0) < ?", (ver,)).fetchall()
+        updated = skipped = 0
+        for row in rows:
+            fp = row["filepath"]
+            if (not fp or not os.path.isfile(fp) or not row["source_md5"]
+                    or _file_md5(fp) != row["source_md5"]):
+                skipped += 1
+                continue
+            try:
+                data = parser.parse(fp)
+            except Exception:
+                skipped += 1
+                continue
+            s = data["summary"]
+            with self._connect() as con:
+                con.execute("DELETE FROM components WHERE run_id=?", (row["id"],))
+                con.executemany(
+                    """INSERT INTO components
+                       (run_id, ref, type, nominal, measured, deviation, status,
+                        note, lower_limit, upper_limit)
+                       VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                    [(row["id"], c["ref"], c["type"], c.get("nominal",""),
+                      c.get("measured",""), c.get("deviation",""), c["status"],
+                      c.get("note",""), c.get("lower_limit","—"),
+                      c.get("upper_limit","—"))
+                     for c in data.get("components", [])])
+                con.execute(
+                    """UPDATE runs SET total=?, passed=?, failed=?, pass_rate=?,
+                       status=?, parser_version=? WHERE id=?""",
+                    (s["total"], s["passed"], s["failed"], s["pass_rate"],
+                     s["status"], ver, row["id"]))
+            updated += 1
+        return updated, skipped
 
     # ── SEARCH ────────────────────────────────────────────────────
     def search(self, query: str, limit: int = 100) -> list:

@@ -153,7 +153,7 @@ class TablesPanel(ctk.CTkFrame):
         s.configure("ICT.Treeview", background=S3, fieldbackground=S3,
                     foreground=TXT, rowheight=38, font=("Segoe UI",12))
         s.configure("ICT.Treeview.Heading", background=S2, foreground=INFO,
-                    font=("Segoe UI",11,"bold"), relief="flat", padding=(12,10))
+                    font=("Segoe UI",11,"bold"), relief="flat", padding=(6,10))
         s.map("ICT.Treeview", background=[("selected",S1)])
         s.layout("ICT.Treeview",[("ICT.Treeview.treearea",{"sticky":"nswe"})])
 
@@ -184,11 +184,11 @@ class TablesPanel(ctk.CTkFrame):
             segmented_button_unselected_hover_color=BD, text_color=TXT)
         self.tabs.pack(fill="both", expand=True)
         self.tv_comp  = self._tab("Component Results",
-            ["Ref","Type","Nominal","Measured","Deviation","Status"],
-            [300,120,140,140,120,100])          # Ref column widened
+            ["Ref","Type","Nominal","Measured","Lower Limit","Upper Limit","Status"],
+            [300,130,130,130,120,120,90])
         self.tv_fail  = self._tab("Failed Components",
-            ["Ref","Type","Nominal","Measured","Deviation","Limit","Note"],
-            [300,120,130,130,110,100,260])
+            ["Ref","Type","Nominal","Measured","Lower Limit","Upper Limit","Note"],
+            [300,130,130,130,120,120,240])
 
     def _tab(self, name, cols, widths):
         tab = self.tabs.add(name)
@@ -201,7 +201,8 @@ class TablesPanel(ctk.CTkFrame):
         sby.pack(side="right",fill="y"); sbx.pack(side="bottom",fill="x")
         tv.pack(fill="both", expand=True)
         for col, w in zip(cols, widths):
-            tv.heading(col, text=col); tv.column(col, width=w, anchor="w", minwidth=60)
+            tv.heading(col, text=col, anchor="w")
+            tv.column(col, width=w, anchor="w", minwidth=60, stretch=True)
         tv.tag_configure("pass", foreground=PASS)
         tv.tag_configure("fail", foreground=FAIL)
         return tv
@@ -232,12 +233,14 @@ class TablesPanel(ctk.CTkFrame):
         for c in shown_c:
             self.tv_comp.insert("","end", values=(
                 c["ref"],c["type"],c.get("nominal","—"),c.get("measured","—"),
-                c.get("deviation","—"),c["status"]),
+                c.get("lower_limit") or "—",c.get("upper_limit") or "—",
+                c["status"]),
                 tags=("pass" if c["status"]=="PASS" else "fail",))
         for c in shown_f:
             self.tv_fail.insert("","end", values=(
                 c["ref"],c["type"],c.get("nominal","—"),c.get("measured","—"),
-                c.get("deviation","—"),c.get("limit","—"),c.get("note","—")),
+                c.get("lower_limit") or "—",c.get("upper_limit") or "—",
+                c.get("note") or "—"),
                 tags=("fail",))
 
         self._count.configure(
@@ -793,6 +796,12 @@ class ICTApp(ctk.CTk):
         self.reporter = ReportGenerator()
         self._data    = None
         self._file_count = 0
+
+        # Re-parse runs stored by an older parser so old rows never linger
+        try:
+            self.db.refresh_outdated_runs(self.parser)
+        except Exception as e:
+            print(f"[Startup] Could not refresh old runs: {e}")
 
         self._build()
 
@@ -1370,6 +1379,7 @@ class ICTApp(ctk.CTk):
     def _build_test_types(self, components):
         tm = {"Resistor":"Resistance","Capacitor":"Capacitance","Inductor":"Inductance",
               "IC":"In-Circuit","Transistor":"In-Circuit","Diode":"In-Circuit",
+              "Zener Diode":"In-Circuit","Jumper Resistor":"Resistance",
               "Connector":"Continuity","Component":"Other"}
         tt = {}
         for c in components:
@@ -1436,16 +1446,19 @@ class ICTApp(ctk.CTk):
                 ("Timestamp",s.get("timestamp",""))],1):
                 ws.cell(r,1,k).font=Font(bold=True); ws.cell(r,2,v)
             ws2=wb.create_sheet("Component Results")
-            ws2.append(["Ref","Type","Nominal","Measured","Deviation","Status"])
+            ws2.append(["Ref","Type","Nominal","Measured","Lower Limit","Upper Limit","Deviation","Status"])
             for c in self._data.get("components",[]):
                 ws2.append([c["ref"],c["type"],c.get("nominal","—"),
-                             c.get("measured","—"),c.get("deviation","—"),c["status"]])
+                             c.get("measured","—"),
+                             c.get("lower_limit") or "—",c.get("upper_limit") or "—",
+                             c.get("deviation","—"),c["status"]])
             ws3=wb.create_sheet("Failed Components")
-            ws3.append(["Ref","Type","Nominal","Measured","Deviation","Limit","Note"])
+            ws3.append(["Ref","Type","Nominal","Measured","Lower Limit","Upper Limit","Deviation","Note"])
             for c in self._data.get("failed_detail",[]):
                 ws3.append([c["ref"],c["type"],c.get("nominal","—"),
-                             c.get("measured","—"),c.get("deviation","—"),
-                             c.get("limit","—"),c.get("note","—")])
+                             c.get("measured","—"),
+                             c.get("lower_limit") or "—",c.get("upper_limit") or "—",
+                             c.get("deviation","—"),c.get("note","—")])
             wb.save(path)
             messagebox.showinfo("Exported",f"Saved:\n{path}")
         except ImportError:

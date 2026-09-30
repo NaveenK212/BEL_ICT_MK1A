@@ -7,6 +7,9 @@ import os, re, csv, datetime
 
 
 class ICTParser:
+    # Bump whenever parsing rules change: the app re-parses stored runs
+    # saved by an older version automatically at startup.
+    VERSION = 8
 
     # ── PUBLIC ENTRY POINT ────────────────────────────────────────
     def parse(self, filepath: str) -> dict:
@@ -91,21 +94,57 @@ class ICTParser:
                     blk["meas"].append(m)
 
         # ── turn blocks into component rows ──────────────────────
+        #  PASSIVE (RES CAP JUM MEA ...): one row per measurement, judged
+        #      against its lower / upper limit.
+        #  ACTIVE  (DIO ZEN NFE PFE MEA): one row per block, limits shown as NA,
+        #      result taken ONLY from the block code (00 = PASS, else FAIL).
+        ACTIVE = ("DIO", "ZEN", "NFE", "PFE", "MEA")
         entries = []
         for b in blocks:
+            act = [m for m in b["meas"] if m["kind"] in ACTIVE]
+            pas = [m for m in b["meas"] if m["kind"] not in ACTIVE]
             oks     = [self._in_limits(m["meas"], m["upper"], m["lower"])
-                       for m in b["meas"]]
+                       for m in pas]
             any_out = any(ok is False for ok in oks)
-            for m, ok in zip(b["meas"], oks):
+            for m, ok in zip(pas, oks):
                 if ok is False:
                     status, note = "FAIL", "Out of tolerance"
-                elif b["tester_fail"] and not any_out:
+                elif b["tester_fail"] and not any_out and not act:
                     status, note = "FAIL", "Flagged FAIL by tester"
                 else:
                     status, note = "PASS", ""
                 entries.append((b, m, status, note))
+            if act:
+                kinds = [m["kind"] for m in act]
+                kind  = ("ZEN" if "ZEN" in kinds else
+                         "NFE" if "NFE" in kinds else
+                         "PFE" if "PFE" in kinds else
+                         "DIO" if "DIO" in kinds else "MEA")
+                summ  = {"meas": None, "label": "", "kind": kind, "active": True,
+                         "nominal": None, "upper": None, "lower": None}
+                if b["tester_fail"]:
+                    status, note = "FAIL", "Flagged FAIL by tester"
+                else:
+                    status, note = "PASS", ""
+                entries.append((b, summ, status, note))
             if not b["meas"] and b["tester_fail"]:
                 entries.append((b, None, "FAIL", "Flagged FAIL by tester"))
+
+        # The tester may split one part (e.g. U16%diode) over several blocks:
+        # merge active rows with the same ref + tag; FAIL if any part failed.
+        merged, seen = [], {}
+        for b, m, status, note in entries:
+            if m and m.get("active"):
+                key = (b["base"], b["tag"], m["kind"])
+                if key in seen:
+                    i = seen[key]
+                    ob, om, ost, onote = merged[i]
+                    if status == "FAIL":
+                        merged[i] = (ob, om, "FAIL", note)
+                    continue
+                seen[key] = len(merged)
+            merged.append((b, m, status, note))
+        entries = merged
 
         # ── unique, readable refs (only when a ref repeats) ──────
         from collections import Counter
@@ -124,7 +163,8 @@ class ICTParser:
             if m:
                 c = self._make_comp(ref, status, m["meas"], m["nominal"],
                                     m["upper"], m["lower"], note=note,
-                                    ctype=self._infer_type(b["base"]))
+                                    ctype=self._type_for(b["base"], m["kind"]),
+                                    active=m.get("active", False))
             else:
                 c = self._make_comp(ref, status, None, None, None, None,
                                     note=note,
@@ -166,6 +206,8 @@ class ICTParser:
         except ValueError:
             return None
         label = parts[3].strip() if len(parts) > 3 else ""
+        km   = re.search(r"@A-([A-Z]+)", head)
+        kind = km.group(1) if km else ""
         nominal = upper = lower = None
         if lim_idx >= 0:
             lp = body[lim_idx:].rstrip("} ").split("|")
@@ -176,7 +218,7 @@ class ICTParser:
                     upper, lower = (float(x) for x in lp[1:3])
             except ValueError:
                 pass
-        return {"meas": meas, "label": label,
+        return {"meas": meas, "label": label, "kind": kind,
                 "nominal": nominal, "upper": upper, "lower": lower}
 
     @staticmethod
@@ -301,11 +343,35 @@ class ICTParser:
         if v >= 1e-3: return f"{val*1e3:.4f}m"
         if v >= 1e-6: return f"{val*1e6:.4f}µ"
         if v >= 1e-9: return f"{val*1e9:.4f}n"
+        if v >= 1e-12: return f"{val*1e12:.4f}p"
+        if v >= 1e-15: return f"{val*1e15:.4f}f"
         if v == 0:    return "0"
         return f"{val:.4e}"
 
+    def _type_for(self, base: str, kind: str) -> str:
+        """Component type from the @A-xxx measurement kind first,
+        falling back to the reference-designator prefix."""
+        b = base.lower()
+        if kind == "ZEN": return "Zener Diode"
+        if kind in ("NFE", "PFE"): return "Transistor"
+        if kind == "DIO":
+            return "Transistor" if b.startswith("q") else "Diode"
+        if kind == "RES": return "Resistor"
+        if kind == "CAP": return "Capacitor"
+        if kind == "JUM":
+            if b.startswith("r"): return "Jumper Resistor"
+            if b.startswith("j"): return "Connector"
+        return self._infer_type(base)
+
+    def _fmt_limit(self, v):
+        if v is None: return "—"
+        if v >=  1e90: return "∞"
+        if v <= -1e90: return "-∞"
+        return self._fmt(v)
+
     def _infer_type(self, ref: str) -> str:
         r = ref.lower()
+        if r.startswith("testjet"): return "Testjet"
         if r.startswith("cr"): return "Diode"
         if r.startswith("r"):  return "Resistor"
         if r.startswith("c"):  return "Capacitor"
@@ -318,9 +384,21 @@ class ICTParser:
         return "Component"
 
     def _make_comp(self, ref, status, meas, nominal_val, upper, lower,
-                   note=None, ctype=None):
+                   note=None, ctype=None, active=False):
         ctype = ctype or self._infer_type(ref)
         nominal = "—"; dev = "—"
+
+        if active:      # diode / zener / transistor: PASS-FAIL only
+            return {"ref": ref, "type": ctype, "nominal": "NA",
+                    "measured": "NA", "deviation": "—",
+                    "lower_limit": "NA", "upper_limit": "NA",
+                    "status": status,
+                    "note": note if note is not None else ""}
+
+        lower_s = upper_s = "—"
+        if upper is not None and lower is not None:
+            lower_s = self._fmt_limit(min(upper, lower))
+            upper_s = self._fmt_limit(max(upper, lower))
 
         # Use actual nominal from @LIM3 if available
         if nominal_val is not None and abs(nominal_val) < 1e90:
@@ -343,6 +421,8 @@ class ICTParser:
             "nominal": nominal,
             "measured": self._fmt(meas) if meas is not None else "—",
             "deviation": dev,
+            "lower_limit": lower_s,
+            "upper_limit": upper_s,
             "status": status,
             "note": note if note is not None else
                     ("Out of tolerance" if status == "FAIL" else ""),
@@ -380,6 +460,7 @@ class ICTParser:
             "Inductor": "Inductance", "IC": "In-Circuit",
             "Transistor": "In-Circuit", "Diode": "In-Circuit",
             "Connector": "Continuity", "Transformer": "In-Circuit",
+            "Zener Diode": "In-Circuit", "Jumper Resistor": "Resistance",
             "Component": "Other",
         }
         test_types: dict = {}
@@ -396,10 +477,22 @@ class ICTParser:
                             c["ref"] for c in failed_detail
                         ).most_common(8)]
 
+        # Board result: the tester's @BTEST code is authoritative when the
+        # file has one (00 = PASS, anything else = FAIL); otherwise derive it.
+        if meta.get("board_code") is not None:
+            board_status = "PASS" if meta["board_code"] == "00" else "FAIL"
+        else:
+            board_status = "FAIL" if failed > 0 else "PASS"
+
         insights = []
-        if failed > 0:
+        if failed > 0 and board_status == "FAIL":
             insights.append(
                 f"WARNING: {failed} component(s) failed — board requires rework")
+        if failed > 0 and board_status == "PASS":
+            refs = ", ".join(c["ref"] for c in failed_detail[:6])
+            insights.append(
+                f"NOTE: Tester result is PASS (@BTEST code 00) but {failed} "
+                f"block(s) are flagged FAIL: {refs} — verify the file")
         if meta.get("board_fail") and failed == 0:
             insights.append(
                 f"WARNING: Tester marked this board FAIL "
@@ -412,6 +505,7 @@ class ICTParser:
 
         return {
             "format":   fmt,
+            "parser_version": self.VERSION,
             "filepath": filepath,
             "summary": {
                 "board_name": meta.get("board_name", "Unknown"),
@@ -420,8 +514,7 @@ class ICTParser:
                 "passed":     passed,
                 "failed":     failed,
                 "pass_rate":  rate,
-                "status":     ("FAIL" if failed > 0 or meta.get("board_fail")
-                               else "PASS"),
+                "status":     board_status,
                 "test_time":  datetime.datetime.now().strftime("%H:%M:%S"),
                 "timestamp":  datetime.datetime.now().isoformat(),
             },
