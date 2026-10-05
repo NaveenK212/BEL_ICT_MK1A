@@ -216,6 +216,27 @@ class TablesPanel(ctk.CTkFrame):
         self._render()
 
     @staticmethod
+    def _mask(v):
+        """Blank out 'NA' (IC, testjet, diode, ... have no nominal / limits)."""
+        v = "" if v is None else str(v).strip()
+        if v.upper() == "NA":
+            return ""
+        return v or "—"
+
+    _MASK_COLS = (("Nominal", "nominal"), ("Measured", "measured"),
+                  ("Upper Limit", "upper_limit"), ("Lower Limit", "lower_limit"))
+
+    def _update_headings(self, tv, rows):
+        """Hide the Nominal / Measured / Upper / Lower headings when none of the
+        rows shown has a real value in that column (IC, diode, transistor,
+        testjet ... are PASS/FAIL only). Passive parts bring the headings back."""
+        for title, key in self._MASK_COLS:
+            has_data = any(str(c.get(key, "")).strip().upper() != "NA" for c in rows)
+            if not rows:               # nothing shown -> keep normal headings
+                has_data = True
+            tv.heading(title, text=title if has_data else "")
+
+    @staticmethod
     def _why(c):
         """Reason text for a failed component (older saved runs only have a
         generic note until the parser re-processes them)."""
@@ -243,16 +264,19 @@ class TablesPanel(ctk.CTkFrame):
 
         for c in shown_c:
             self.tv_comp.insert("","end", values=(
-                c["ref"],c["type"],c.get("nominal") or "—",c.get("measured","—"),
-                c.get("upper_limit") or "—",c.get("lower_limit") or "—",
+                c["ref"],c["type"],self._mask(c.get("nominal")),self._mask(c.get("measured")),
+                self._mask(c.get("upper_limit")),self._mask(c.get("lower_limit")),
                 c["status"]),
                 tags=("pass" if c["status"]=="PASS" else "fail",))
         for c in shown_f:
             self.tv_fail.insert("","end", values=(
-                c["ref"],c["type"],c.get("nominal") or "—",c.get("measured","—"),
-                c.get("upper_limit") or "—",c.get("lower_limit") or "—",
+                c["ref"],c["type"],self._mask(c.get("nominal")),self._mask(c.get("measured")),
+                self._mask(c.get("upper_limit")),self._mask(c.get("lower_limit")),
                 self._why(c)),
                 tags=("fail",))
+
+        self._update_headings(self.tv_comp, shown_c)
+        self._update_headings(self.tv_fail, shown_f)
 
         self._count.configure(
             text=f"{len(shown_c)} of {len(comps)} test results  ·  {len(shown_f)} failed")

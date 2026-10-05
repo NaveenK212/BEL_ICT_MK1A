@@ -161,9 +161,7 @@ class ReportGenerator:
              kp("Serial"), vp(s["serial"], True)],
             [kp("Status"), vp(s["status"], True, sc),
              kp("Pass Rate"), vp(f"{rt:.1f}%", True, rc)],
-            [kp("Total Tested"), vp(str(s["total"])),
-             kp("Test Time"), vp(s.get("timestamp", "")[:19].replace("T", " "))],
-            [kp("Passed"), vp(str(s["passed"]), True, C("pass")),
+            [kp("Test Time"), vp(s.get("timestamp", "")[:19].replace("T", " ")),
              kp("Failed"), vp(str(s["failed"]), True,
                               C("fail") if s["failed"] > 0 else C("pass"))],
         ]
@@ -204,7 +202,7 @@ class ReportGenerator:
         # Failed components: which part, and why
         story.extend(self._failed_section(data, ST))
 
-        # 8 Charts
+        # Charts (Pareto and Run Metrics bar chart removed)
         charts = self._build_charts(data)
         for title, img, summary_text in charts:
             story.append(KeepTogether([
@@ -268,19 +266,28 @@ class ReportGenerator:
                 "fc", fontSize=8, fontName=font, leading=10,
                 textColor=color or C("txt")))
 
-        rows = [[cell(h, True, C("info")) for h in
-                 ("#", "Component", "Type", "Nominal", "Measured",
-                  "Limits (high / low)", "Why it failed")]]
+        def _has(key):
+            return any(str(c.get(key) or "").strip().upper() != "NA" for c in fails)
+        # IC / diode / transistor rows carry no nominal, measured or limits,
+        # so hide those headings when no failed part has them.
+        heads = ["#", "Component", "Type",
+                 "Nominal" if _has("nominal") else "",
+                 "Measured" if _has("measured") else "",
+                 "Limits (high / low)" if (_has("upper_limit") or _has("lower_limit")) else "",
+                 "Why it failed"]
+        rows = [[cell(h, True, C("info")) for h in heads]]
         for i, c in enumerate(fails, 1):
             lo = c.get("lower_limit") or "—"
             hi = c.get("upper_limit") or "—"
-            limits = "NA" if lo == "NA" and hi == "NA" else f"{hi} / {lo}"
+            limits = "" if lo == "NA" and hi == "NA" else f"{hi} / {lo}"
+            nom = c.get("nominal") or "—"
+            nom = "" if nom == "NA" else nom
             rows.append([
                 cell(i, color=C("muted")),
                 cell(c["ref"], True, C("fail"), mono=True),
                 cell(c.get("type", "")),
-                cell(c.get("nominal") or "—", mono=True),
-                cell(c.get("measured", "—"), mono=True),
+                cell(nom, mono=True),
+                cell("" if c.get("measured") == "NA" else c.get("measured", "—"), mono=True),
                 cell(limits, mono=True),
                 cell(self._why(c)),
             ])
@@ -305,12 +312,10 @@ class ReportGenerator:
         return [
             self._chart_donut(data),
             self._chart_gauge(data),
-            self._chart_pareto(data),
             self._chart_test_types(data),
             self._chart_pass_rate_by_type(data),
             self._chart_deviation(data),
             self._chart_failure_categories(data),
-            self._chart_metrics_overview(data),
         ]
 
     def _chart_donut(self, data):
