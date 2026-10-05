@@ -269,21 +269,22 @@ class ReportGenerator:
                 textColor=color or C("txt")))
 
         rows = [[cell(h, True, C("info")) for h in
-                 ("#", "Component", "Type", "Measured", "Limits (low / high)",
-                  "Why it failed")]]
+                 ("#", "Component", "Type", "Nominal", "Measured",
+                  "Limits (high / low)", "Why it failed")]]
         for i, c in enumerate(fails, 1):
             lo = c.get("lower_limit") or "—"
             hi = c.get("upper_limit") or "—"
-            limits = "NA" if lo == "NA" and hi == "NA" else f"{lo} / {hi}"
+            limits = "NA" if lo == "NA" and hi == "NA" else f"{hi} / {lo}"
             rows.append([
                 cell(i, color=C("muted")),
                 cell(c["ref"], True, C("fail"), mono=True),
                 cell(c.get("type", "")),
+                cell(c.get("nominal") or "—", mono=True),
                 cell(c.get("measured", "—"), mono=True),
                 cell(limits, mono=True),
                 cell(self._why(c)),
             ])
-        t = Table(rows, colWidths=[8*mm, 28*mm, 20*mm, 20*mm, 33*mm, None],
+        t = Table(rows, colWidths=[8*mm, 26*mm, 18*mm, 18*mm, 18*mm, 30*mm, None],
                   repeatRows=1)
         t.setStyle(TableStyle([
             ("BACKGROUND", (0, 0), (-1, 0), C("s1")),

@@ -184,11 +184,11 @@ class TablesPanel(ctk.CTkFrame):
             segmented_button_unselected_hover_color=BD, text_color=TXT)
         self.tabs.pack(fill="both", expand=True)
         self.tv_comp  = self._tab("Component Results",
-            ["Ref","Test Type","Measured","Lower Limit","Upper Limit","Status"],
-            [320,150,150,140,140,100])
+            ["Ref","Test Type","Nominal","Measured","Upper Limit","Lower Limit","Status"],
+            [300,140,130,130,130,130,100])
         self.tv_fail  = self._tab("Failed Components",
-            ["Ref","Test Type","Measured","Lower Limit","Upper Limit","Why It Failed"],
-            [200,120,110,110,110,700])
+            ["Ref","Test Type","Nominal","Measured","Upper Limit","Lower Limit","Why It Failed"],
+            [200,120,110,110,110,110,650])
 
     def _tab(self, name, cols, widths):
         tab = self.tabs.add(name)
@@ -243,14 +243,14 @@ class TablesPanel(ctk.CTkFrame):
 
         for c in shown_c:
             self.tv_comp.insert("","end", values=(
-                c["ref"],c["type"],c.get("measured","—"),
-                c.get("lower_limit") or "—",c.get("upper_limit") or "—",
+                c["ref"],c["type"],c.get("nominal") or "—",c.get("measured","—"),
+                c.get("upper_limit") or "—",c.get("lower_limit") or "—",
                 c["status"]),
                 tags=("pass" if c["status"]=="PASS" else "fail",))
         for c in shown_f:
             self.tv_fail.insert("","end", values=(
-                c["ref"],c["type"],c.get("measured","—"),
-                c.get("lower_limit") or "—",c.get("upper_limit") or "—",
+                c["ref"],c["type"],c.get("nominal") or "—",c.get("measured","—"),
+                c.get("upper_limit") or "—",c.get("lower_limit") or "—",
                 self._why(c)),
                 tags=("fail",))
 
