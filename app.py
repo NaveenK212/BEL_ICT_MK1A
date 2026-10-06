@@ -173,7 +173,19 @@ class TablesPanel(ctk.CTkFrame):
         ctk.CTkButton(sbar, text="⌫ Clear", width=70, height=32,
                       fg_color=S3, hover_color=S1, border_color=BD, border_width=1,
                       font=("Segoe UI",10), text_color=MUT,
-                      command=lambda: self._q.set("")).pack(side="left", padx=4)
+                      command=self._clear_filters).pack(side="left", padx=4)
+        ctk.CTkLabel(sbar, text="TYPE", font=("Segoe UI",10,"bold"),
+                     text_color=INFO).pack(side="left", padx=(14,6))
+        self._ALL = "All Types"
+        self._type_var = tk.StringVar(value=self._ALL)
+        self._type_menu = ctk.CTkOptionMenu(
+            sbar, variable=self._type_var, values=[self._ALL], width=170, height=32,
+            font=("Segoe UI",11), dropdown_font=("Segoe UI",11),
+            fg_color=S3, button_color=BD, button_hover_color=INFO,
+            dropdown_fg_color=S2, dropdown_hover_color=BD,
+            dropdown_text_color=TXT, text_color=TXT,
+            command=lambda _v: self._render())
+        self._type_menu.pack(side="left", padx=4)
         self._count = ctk.CTkLabel(sbar, text="", font=("Segoe UI",10), text_color=MUT)
         self._count.pack(side="right", padx=14)
 
@@ -211,8 +223,23 @@ class TablesPanel(ctk.CTkFrame):
         for tv in (self.tv_comp, self.tv_fail):
             for r in tv.get_children(): tv.delete(r)
 
+    def _clear_filters(self):
+        self._type_var.set(self._ALL)
+        self._q.set("")          # triggers _render
+        self._render()
+
+    def _refresh_types(self):
+        """Fill the dropdown with the component types present in this report."""
+        types = sorted({str(c.get("type", "")).strip()
+                        for c in self._data.get("components", [])
+                        if str(c.get("type", "")).strip()}, key=str.lower)
+        self._type_menu.configure(values=[self._ALL] + types)
+        if self._type_var.get() not in types:
+            self._type_var.set(self._ALL)
+
     def populate(self, data):
         self._data = data
+        self._refresh_types()
         self._render()
 
     @staticmethod
@@ -252,7 +279,11 @@ class TablesPanel(ctk.CTkFrame):
         self._clear()
         q = self._q.get().strip().lower().replace(" ", "")   # "test jet" == "testjet"
 
+        sel = self._type_var.get()
+
         def match(c):
+            if sel != self._ALL and str(c.get("type", "")).strip() != sel:
+                return False
             if not q: return True
             def norm(k): return str(c.get(k,"")).lower().replace(" ", "")
             return (q in norm("ref") or q in norm("type") or q in norm("status"))
