@@ -9,7 +9,7 @@ import os, re, csv, datetime
 class ICTParser:
     # Bump whenever parsing rules change: the app re-parses stored runs
     # saved by an older version automatically at startup.
-    VERSION = 14
+    VERSION = 17
 
     # ── PUBLIC ENTRY POINT ────────────────────────────────────────
     def parse(self, filepath: str) -> dict:
@@ -133,6 +133,15 @@ class ICTParser:
             pas = [m for m in b["meas"] if m["kind"] not in ACTIVE]
             oks     = [self._in_limits(m["meas"], m["upper"], m["lower"])
                        for m in pas]
+            # AR* parts are ICs: one PASS/FAIL row, no nominal / limits shown.
+            # A reading outside its limits still makes the IC fail.
+            ic_note = None
+            if b["base"].lower().startswith("ar") and pas:
+                bad = [m for m, ok in zip(pas, oks) if ok is False]
+                if bad:
+                    ic_note = self._limit_reason(bad[0])
+                act = act + pas
+                pas, oks = [], []
             any_out = any(ok is False for ok in oks)
             for m, ok in zip(pas, oks):
                 if ok is False:
@@ -152,7 +161,9 @@ class ICTParser:
                          "DIO" if "DIO" in kinds else "MEA")
                 summ  = {"meas": None, "label": "", "kind": kind, "active": True,
                          "nominal": None, "upper": None, "lower": None}
-                if b["tester_fail"]:
+                if ic_note:
+                    status, note = "FAIL", ic_note
+                elif b["tester_fail"]:
                     status, note = "FAIL", self._active_reason(kind, b, act)
                 else:
                     status, note = "PASS", ""
@@ -195,6 +206,28 @@ class ICTParser:
                 seen[key] = len(merged)
             merged.append((b, m, status, note))
         entries = merged
+
+        # ── RELAYS (K1, K2 ...): one row per relay, PASS / FAIL only ─────
+        # The tester splits a relay into many sub-blocks (K1%unp%close_1_3,
+        # coil, open ...). Show just "K1": FAIL if any sub-block failed.
+        relay_re = re.compile(r"^K\d+$")
+        collapsed, rpos = [], {}
+        for b, m, status, note in entries:
+            if (relay_re.match(b["base"]) and not (m and
+                    (m.get("tj_device") or m.get("tj_summary")))):
+                if b["base"] in rpos:
+                    i = rpos[b["base"]]
+                    ob, om, ost, onote = collapsed[i]
+                    if status == "FAIL" and ost != "FAIL":
+                        collapsed[i] = (ob, om, "FAIL", note)
+                    continue
+                rpos[b["base"]] = len(collapsed)
+                summ = {"meas": None, "label": "", "kind": "REL", "active": True,
+                        "nominal": None, "upper": None, "lower": None}
+                collapsed.append((dict(b, tag=""), summ, status, note))
+                continue
+            collapsed.append((b, m, status, note))
+        entries = collapsed
 
         # ── unique, readable refs (only when a ref repeats) ──────
         from collections import Counter
@@ -454,6 +487,8 @@ class ICTParser:
         falling back to the reference-designator prefix."""
         b = base.lower()
         if kind == "TJ": return "Testjet"
+        if b.startswith("ar"): return "IC"
+        if kind == "REL" or re.match(r"k\d", b): return "Relay"
         if kind == "ZEN": return "Zener Diode"
         if kind in ("NFE", "PFE"): return "Transistor"
         if kind == "DIO":
@@ -474,6 +509,8 @@ class ICTParser:
     def _infer_type(self, ref: str) -> str:
         r = ref.lower()
         if r.startswith("testjet"): return "Testjet"
+        if r.startswith("ar"): return "IC"
+        if re.match(r"k\d", r): return "Relay"
         if r.startswith("cr"): return "Diode"
         if r.startswith("r"):  return "Resistor"
         if r.startswith("c"):  return "Capacitor"

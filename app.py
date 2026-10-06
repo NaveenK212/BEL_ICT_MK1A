@@ -1479,7 +1479,7 @@ class ICTApp(ctk.CTk):
         tm = {"Resistor":"Resistance","Capacitor":"Capacitance","Inductor":"Inductance",
               "IC":"In-Circuit","Transistor":"In-Circuit","Diode":"In-Circuit",
               "Zener Diode":"In-Circuit","Jumper Resistor":"Resistance","Testjet":"Testjet",
-              "Connector":"Continuity","Component":"Other"}
+              "Connector":"Continuity","Relay":"Continuity","Component":"Other"}
         tt = {}
         for c in components:
             k = tm.get(c["type"],"Other")

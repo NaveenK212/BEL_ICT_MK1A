@@ -202,7 +202,7 @@ class ReportGenerator:
         # Failed components: which part, and why
         story.extend(self._failed_section(data, ST))
 
-        # Charts (Pareto and Run Metrics bar chart removed)
+        # Charts (only Pass/Fail Overview and Failure Category Breakdown)
         charts = self._build_charts(data)
         for title, img, summary_text in charts:
             story.append(KeepTogether([
@@ -311,10 +311,6 @@ class ReportGenerator:
         s = data["summary"]
         return [
             self._chart_donut(data),
-            self._chart_gauge(data),
-            self._chart_test_types(data),
-            self._chart_pass_rate_by_type(data),
-            self._chart_deviation(data),
             self._chart_failure_categories(data),
         ]
 
@@ -342,9 +338,9 @@ class ReportGenerator:
 
     def _chart_gauge(self, data):
         s = data["summary"]
-        fig = self._fig_nax(9.5, 4)
+        fig = self._fig_nax(9.5, 3.4)
         ax = fig.add_subplot(111, aspect="equal")
-        ax.set_xlim(-1.3, 1.3); ax.set_ylim(-0.2, 1.3); ax.axis("off")
+        ax.set_xlim(-1.15, 1.15); ax.set_ylim(-0.4, 1.0); ax.axis("off")
         rt = s["pass_rate"]
         rc = HX["pass"] if rt >= 98 else HX["warn"] if rt >= 90 else HX["fail"]
         for t1, t2, c in [(np.pi, np.pi*0.67, HX["fail"]),
@@ -354,20 +350,22 @@ class ReportGenerator:
             ax.plot(np.cos(th)*0.85, np.sin(th)*0.85, color=c,
                     linewidth=16, alpha=0.85, solid_capstyle="butt")
         angle = np.pi * (1 - rt / 100)
-        ax.annotate("", xy=(np.cos(angle)*0.7, np.sin(angle)*0.7),
+        ax.annotate("", xy=(np.cos(angle)*0.62, np.sin(angle)*0.62),
                     xytext=(0, 0),
                     arrowprops=dict(arrowstyle="-|>", color=HX["txt"],
                                     lw=2.5, mutation_scale=16))
         ax.plot(0, 0, "o", color=HX["txt"], markersize=9, zorder=5)
-        ax.text(0, 0.28, f"{rt:.1f}%", ha="center", va="center",
+        ax.text(-0.85, -0.12, "0%", ha="center", va="top", fontsize=9, color=HX["muted"])
+        ax.text(0.85, -0.12, "100%", ha="center", va="top", fontsize=9, color=HX["muted"])
+        ax.text(0, 0.38, f"{rt:.1f}%", ha="center", va="center",
                 fontsize=26, fontweight="bold", color=rc, fontfamily="monospace")
-        ax.text(0, 0.08, "Pass Rate", ha="center", va="center",
+        ax.text(0, -0.22, "Pass Rate", ha="center", va="center",
                 fontsize=11, color=HX["muted"])
-        ax.set_title("Pass Rate Gauge", fontsize=13, color=HX["txt"], pad=10)
+        ax.set_title("Pass Rate Gauge", fontsize=13, color=HX["txt"], pad=6)
         zone = "green (>=98%)" if rt >= 98 else "amber (90-98%)" if rt >= 90 else "red (<90%)"
         summary = (f"Pass rate gauge reads {rt:.1f}%, placing this board in the {zone} zone. "
                    f"The 98% threshold is the standard acceptance limit.")
-        return ("Pass Rate Gauge", self._full_img(fig, 85), summary)
+        return ("Pass Rate Gauge", self._full_img(fig, 80), summary)
 
     def _chart_pareto(self, data):
         fig, ax1 = self._fig(9.5, 3.8)
@@ -400,46 +398,60 @@ class ReportGenerator:
         return ("Pareto - Top Failing", self._full_img(fig, 88), summary)
 
     def _chart_test_types(self, data):
-        fig, ax = self._fig(9.5, 3.8)
+        fig, ax = self._fig(9.5, 3.4)
         tests = data.get("test_types", {})
         if tests:
             labels = list(tests.keys())
             passed = [tests[k]["pass"] for k in labels]
             failed = [tests[k]["fail"] for k in labels]
             x = np.arange(len(labels)); w = 0.35
-            ax.bar(x - w/2, passed, w, color=HX["pass"], alpha=0.85, label="Pass")
-            ax.bar(x + w/2, failed, w, color=HX["fail"], alpha=0.85, label="Fail")
-            ax.set_xticks(x); ax.set_xticklabels(labels, fontsize=11)
-            ax.legend(fontsize=10, framealpha=0); ax.grid(axis="y", alpha=0.3)
+            b1 = ax.bar(x - w/2, passed, w, color=HX["pass"], alpha=0.85, label="Pass")
+            b2 = ax.bar(x + w/2, failed, w, color=HX["fail"], alpha=0.85, label="Fail")
+            ax.bar_label(b1, padding=3, fontsize=9, color=HX["txt"])
+            ax.bar_label(b2, padding=3, fontsize=9, color=HX["fail"], fontweight="bold")
+            top = max(passed + failed + [1])
+            ax.set_ylim(0, top * 1.18)
+            ax.set_xticks(x); ax.set_xticklabels(labels, fontsize=10)
+            ax.legend(fontsize=9, framealpha=0, loc="upper right"); ax.grid(axis="y", alpha=0.3)
             worst = max(tests, key=lambda k: tests[k]["fail"])
-            summary = (f"{len(tests)} test types. {worst} tests had highest failure count "
-                       f"({tests[worst]['fail']}). Helps identify which categories need process improvement.")
+            if tests[worst]["fail"] > 0:
+                summary = (f"{len(tests)} test types. {worst} tests had highest failure count "
+                           f"({tests[worst]['fail']}). Helps identify which categories need process improvement.")
+            else:
+                summary = f"{len(tests)} test types. No failures in any category."
         else:
             ax.text(0.5, 0.5, "No test type data", ha="center", va="center",
                      transform=ax.transAxes, color=HX["muted"], fontsize=12)
             summary = "No test type categorization data available."
-        ax.set_title("Test Type Breakdown", fontsize=13, color=HX["txt"], pad=10)
-        return ("Test Type Breakdown", self._full_img(fig, 88), summary)
+        ax.set_title("Test Type Breakdown", fontsize=13, color=HX["txt"], pad=8)
+        return ("Test Type Breakdown", self._full_img(fig, 80), summary)
 
     def _chart_pass_rate_by_type(self, data):
-        fig, ax = self._fig(9.5, 3.8)
         types = data.get("component_types", {})
+        n = max(len(types), 1)
+        fig, ax = self._fig(9.5, max(3.0, 0.34 * n + 1.4))
         if types:
             labels = list(types.keys())
-            pass_pct = []
+            pass_pct, totals, fails = [], [], []
             for k in labels:
                 total = types[k]["pass"] + types[k]["fail"]
+                totals.append(total); fails.append(types[k]["fail"])
                 pass_pct.append(types[k]["pass"] / total * 100 if total > 0 else 0)
             fail_pct = [100 - p for p in pass_pct]
-            x = np.arange(len(labels))
-            ax.bar(x, pass_pct, color=HX["pass"], alpha=0.85, width=0.5, label="Pass %")
-            ax.bar(x, fail_pct, bottom=pass_pct, color=HX["fail"], alpha=0.85, width=0.5, label="Fail %")
-            ax.axhline(98, color=HX["warn"], linewidth=1.5, linestyle="--", alpha=0.8, label="98% target")
-            for i, p in enumerate(pass_pct):
-                ax.text(i, p/2, f"{p:.0f}%", ha="center", va="center",
-                        fontsize=10, color="white", fontweight="bold")
-            ax.set_xticks(x); ax.set_xticklabels(labels, fontsize=11)
-            ax.set_ylim(0, 115); ax.legend(fontsize=10, framealpha=0); ax.grid(axis="y", alpha=0.3)
+            y = np.arange(len(labels))[::-1]          # first type on top
+            ax.barh(y, pass_pct, color=HX["pass"], alpha=0.85, height=0.6, label="Pass %")
+            ax.barh(y, fail_pct, left=pass_pct, color=HX["fail"], alpha=0.85, height=0.6, label="Fail %")
+            ax.axvline(98, color=HX["warn"], linewidth=1.5, linestyle="--", alpha=0.9, label="98% target")
+            for yi, p, f, t in zip(y, pass_pct, fails, totals):
+                ax.text(50, yi, f"{p:.1f}%", ha="center", va="center", fontsize=9,
+                        color="#06210f", fontweight="bold")
+                ax.text(102, yi, f"{f} fail / {t}", ha="left", va="center", fontsize=8,
+                        color=HX["fail"] if f else HX["muted"])
+            ax.set_yticks(y); ax.set_yticklabels(labels, fontsize=9)
+            ax.set_xlim(0, 128); ax.set_xticks([0, 25, 50, 75, 100])
+            ax.grid(axis="x", alpha=0.3); ax.grid(axis="y", visible=False)
+            ax.legend(fontsize=9, framealpha=0, loc="upper center",
+                      bbox_to_anchor=(0.5, -0.1), ncol=3)
             below = [l for l, p in zip(labels, pass_pct) if p < 98]
             if below:
                 summary = f"{', '.join(below)} fell below 98% threshold. Prioritize for root cause analysis."
@@ -449,11 +461,11 @@ class ReportGenerator:
             ax.text(0.5, 0.5, "No type data", ha="center", va="center",
                      transform=ax.transAxes, color=HX["muted"], fontsize=12)
             summary = "No type data available."
-        ax.set_title("Pass Rate by Type", fontsize=13, color=HX["txt"], pad=10)
-        return ("Pass Rate by Type", self._full_img(fig, 88), summary)
+        ax.set_title("Pass Rate by Type", fontsize=13, color=HX["txt"], pad=8)
+        return ("Pass Rate by Type", self._full_img(fig, 80), summary)
 
     def _chart_deviation(self, data):
-        fig, ax = self._fig(9.5, 3.8)
+        fig, ax = self._fig(9.5, 3.4)
         devs = []
         for c in data.get("components", []):
             try:
@@ -495,37 +507,41 @@ class ReportGenerator:
                      va="center", transform=ax.transAxes, color=HX["muted"], fontsize=12)
             summary = "Insufficient numeric deviation data for statistical analysis."
         ax.set_title("Deviation Distribution (2 sigma bands)", fontsize=13, color=HX["txt"], pad=10)
-        return ("Deviation Distribution", self._full_img(fig, 88), summary)
+        return ("Deviation Distribution", self._full_img(fig, 80), summary)
 
     def _chart_failure_categories(self, data):
-        fig = self._fig_nax(9.5, 4)
+        fig = self._fig_nax(9.5, 3.6)
         ax = fig.add_subplot(111)
         types = data.get("component_types", {})
         fail_types = {k: v["fail"] for k, v in types.items() if v["fail"] > 0}
         if fail_types:
             labels = list(fail_types.keys())
             vals = list(fail_types.values())
+            total = sum(vals)
             clrs = [HX["fail"], HX["warn"], HX["info"], "#7c4dff",
                     "#ff6d00", "#e040fb", "#00e5ff", "#76ff03"]
-            wedges, texts, autotexts = ax.pie(
-                vals, labels=labels, colors=clrs[:len(labels)],
-                autopct="%1.0f%%", startangle=140,
-                wedgeprops=dict(edgecolor=HX["bg"], linewidth=2),
-                textprops={"fontsize": 10, "color": HX["txt"]})
-            for at in autotexts:
-                at.set_fontsize(9); at.set_color("white"); at.set_fontweight("bold")
+            wedges, _ = ax.pie(
+                vals, colors=clrs[:len(labels)], startangle=90, counterclock=False,
+                wedgeprops=dict(width=0.5, edgecolor=HX["bg"], linewidth=3))
+            ax.text(0, 0.08, str(total), ha="center", va="center", fontsize=26,
+                    fontweight="bold", color=HX["fail"], fontfamily="monospace")
+            ax.text(0, -0.2, "Failures", ha="center", va="center",
+                    fontsize=10, color=HX["muted"])
+            ax.legend(wedges, [f"{l}: {v} ({v/total*100:.0f}%)" for l, v in zip(labels, vals)],
+                      loc="center left", bbox_to_anchor=(1.0, 0.5), fontsize=10,
+                      framealpha=0, labelcolor=HX["txt"])
             ax.axis("equal")
             top = max(fail_types, key=fail_types.get)
-            summary = (f"Failures across {len(fail_types)} types. "
-                       f"{top} accounts for the largest share ({fail_types[top]} failures). "
+            summary = (f"Failures across {len(fail_types)} type(s). "
+                       f"{top} accounts for the largest share ({fail_types[top]} of {total} failures). "
                        f"Targeted inspection of {top} recommended.")
         else:
             ax.text(0.5, 0.5, "No failures to categorize", ha="center",
                      va="center", transform=ax.transAxes, color=HX["pass"], fontsize=14)
-            ax.axis("equal")
+            ax.axis("off")
             summary = "No failures detected. No categorization needed."
-        ax.set_title("Failure Category Breakdown", fontsize=13, color=HX["txt"], pad=10)
-        return ("Failure Category Breakdown", self._full_img(fig, 85), summary)
+        ax.set_title("Failure Category Breakdown", fontsize=13, color=HX["txt"], pad=8)
+        return ("Failure Category Breakdown", self._full_img(fig, 80), summary)
 
     def _chart_metrics_overview(self, data):
         s = data["summary"]
