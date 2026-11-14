@@ -16,6 +16,7 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolb
 from ict_parser     import ICTParser
 from db_manager     import DBManager
 from report_generator import ReportGenerator
+from excel_report import ExcelReportGenerator
 from analytics_window import AnalyticsWindow
 from file_watcher   import FileWatcher
 from config         import Config
@@ -196,10 +197,10 @@ class TablesPanel(ctk.CTkFrame):
             segmented_button_unselected_hover_color=BD, text_color=TXT)
         self.tabs.pack(fill="both", expand=True)
         self.tv_comp  = self._tab("Component Results",
-            ["Ref","Test Type","Nominal","Measured","Upper Limit","Lower Limit","Status"],
+            ["Ref","Test Type","Nominal","Lower Limit","Upper Limit","Measured","Status"],
             [300,140,130,130,130,130,100])
         self.tv_fail  = self._tab("Failed Components",
-            ["Ref","Test Type","Nominal","Measured","Upper Limit","Lower Limit","Why It Failed"],
+            ["Ref","Test Type","Nominal","Lower Limit","Upper Limit","Measured","Why It Failed"],
             [200,120,110,110,110,110,650])
 
     def _tab(self, name, cols, widths):
@@ -250,8 +251,8 @@ class TablesPanel(ctk.CTkFrame):
             return ""
         return v or "—"
 
-    _MASK_COLS = (("Nominal", "nominal"), ("Measured", "measured"),
-                  ("Upper Limit", "upper_limit"), ("Lower Limit", "lower_limit"))
+    _MASK_COLS = (("Nominal", "nominal"), ("Lower Limit", "lower_limit"),
+                  ("Upper Limit", "upper_limit"), ("Measured", "measured"))
 
     def _update_headings(self, tv, rows):
         """Hide the Nominal / Measured / Upper / Lower headings when none of the
@@ -295,14 +296,16 @@ class TablesPanel(ctk.CTkFrame):
 
         for c in shown_c:
             self.tv_comp.insert("","end", values=(
-                c["ref"],c["type"],self._mask(c.get("nominal")),self._mask(c.get("measured")),
-                self._mask(c.get("upper_limit")),self._mask(c.get("lower_limit")),
+                c["ref"],c["type"],self._mask(c.get("nominal")),
+                self._mask(c.get("lower_limit")),self._mask(c.get("upper_limit")),
+                self._mask(c.get("measured")),
                 c["status"]),
                 tags=("pass" if c["status"]=="PASS" else "fail",))
         for c in shown_f:
             self.tv_fail.insert("","end", values=(
-                c["ref"],c["type"],self._mask(c.get("nominal")),self._mask(c.get("measured")),
-                self._mask(c.get("upper_limit")),self._mask(c.get("lower_limit")),
+                c["ref"],c["type"],self._mask(c.get("nominal")),
+                self._mask(c.get("lower_limit")),self._mask(c.get("upper_limit")),
+                self._mask(c.get("measured")),
                 self._why(c)),
                 tags=("fail",))
 
@@ -815,6 +818,12 @@ class RunDetailPopup(ctk.CTkToplevel):
                        font=("Segoe UI",10), text_color=WARN,
                        command=lambda: self._save_pdf(parent, run_id)
                        ).pack(side="right", padx=(0,4))
+        ctk.CTkButton(hdr, text="📊  Save Excel", width=120, height=32,
+                       fg_color=PBG, hover_color="#0f4d2e",
+                       border_color=PASS, border_width=1,
+                       font=("Segoe UI",10), text_color=PASS,
+                       command=lambda: self._save_excel(parent, run_id)
+                       ).pack(side="right", padx=(0,4))
 
         # Fake data object for TablesPanel
         data = {
@@ -829,6 +838,11 @@ class RunDetailPopup(ctk.CTkToplevel):
         """Save PDF for THIS report (dialogs open above this popup)."""
         app._load_run_data(run_id)
         app._save_pdf(parent=self)
+
+    def _save_excel(self, app, run_id):
+        """Save Excel for THIS report (dialogs open above this popup)."""
+        app._load_run_data(run_id)
+        app._save_excel(parent=self)
 
 
 # ── WATCHER STATUS BAR ────────────────────────────────────────────
@@ -875,6 +889,7 @@ class ICTApp(ctk.CTk):
         self.db       = DBManager()
         self.parser   = ICTParser()
         self.reporter = ReportGenerator()
+        self.xl_reporter = ExcelReportGenerator()
         self._data    = None
         self._file_count = 0
 
@@ -1566,6 +1581,45 @@ class ICTApp(ctk.CTk):
             messagebox.showinfo("Saved", f"PDF saved:\n{out}", parent=parent)
         except Exception as e:
             messagebox.showerror("PDF Error", str(e), parent=parent)
+
+    # ── SAVE EXCEL ────────────────────────────────────────────────
+    def _save_excel(self, parent=None):
+        """Excel report: components more than +/-5% from nominal are red."""
+        parent = parent or self
+        if not self._data:
+            messagebox.showinfo("No Data","Select a report from the Reports tab first.",
+                                parent=parent)
+            return
+        s = self._data["summary"]
+        try:
+            ts = datetime.datetime.fromisoformat(s.get("timestamp","")).strftime("%Y%m%d_%H%M%S")
+        except Exception:
+            ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        default_name = f"ICT_{s['board_name']}_{s['serial']}_{ts}.xlsx"
+        folder = self._data.get("run_folder") or ""
+        try:
+            if folder:
+                os.makedirs(folder, exist_ok=True)
+        except Exception:
+            folder = ""
+        path = filedialog.asksaveasfilename(
+            parent=parent,
+            title="Save Excel Report",
+            defaultextension=".xlsx",
+            filetypes=[("Excel files","*.xlsx")],
+            initialdir=folder or None,
+            initialfile=default_name)
+        if not path:
+            return
+        try:
+            out = self.xl_reporter.generate(self._data, save_path=path)
+            messagebox.showinfo("Saved", f"Excel saved:\n{out}", parent=parent)
+        except PermissionError:
+            messagebox.showerror("Excel Error",
+                "Cannot write the file - it is probably open in Excel.\n"
+                "Close it and try again.", parent=parent)
+        except Exception as e:
+            messagebox.showerror("Excel Error", str(e), parent=parent)
 
     # ── RESET DATA ─────────────────────────────────────────────────
     def _reset_data(self):
