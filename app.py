@@ -17,6 +17,7 @@ from ict_parser     import ICTParser
 from db_manager     import DBManager
 from report_generator import ReportGenerator
 from excel_report import ExcelReportGenerator
+from trends_window import TrendsPage
 from analytics_window import AnalyticsWindow
 from file_watcher   import FileWatcher
 from config         import Config
@@ -1001,10 +1002,13 @@ class ICTApp(ctk.CTk):
         self._pages["reports"]   = self._build_reports_page(container)
         self._pages["search"]    = SearchPage(
             container, self.db, on_view_report=self._view_run)
+        self._pages["trends"]    = TrendsPage(
+            container, self.db, on_view_report=self._view_run)
 
         for key, label in [("dashboard","📊  Dashboard"),
                             ("reports",  "📋  Reports"),
-                            ("search",   "🔍  Search")]:
+                            ("search",   "🔍  Search"),
+                            ("trends",   "📈  Trends")]:
             btn = ctk.CTkButton(
                 tabs, text=label, width=1, height=54,
                 fg_color="transparent", hover_color=S2,
@@ -1199,6 +1203,7 @@ class ICTApp(ctk.CTk):
         if key == "dashboard":   self._pages["dashboard"].refresh()
         elif key == "reports":   self._refresh_reports()
         elif key == "search":    self._pages["search"].refresh()
+        elif key == "trends":    self._pages["trends"].refresh()
 
     # ── WATCHER ───────────────────────────────────────────────────
     def _set_watch_folder(self):
@@ -1269,6 +1274,7 @@ class ICTApp(ctk.CTk):
         if self._active_page == "dashboard":  self._pages["dashboard"].refresh()
         elif self._active_page == "reports":  self._refresh_reports()
         elif self._active_page == "search":   self._pages["search"].refresh()
+        elif self._active_page == "trends":   self._pages["trends"].refresh()
 
     def _change_theme(self, display_name):
         """Save selected theme and restart the app."""
@@ -1731,6 +1737,8 @@ class ICTApp(ctk.CTk):
                 self._pages["dashboard"].db = self.db
             if "search" in self._pages:
                 self._pages["search"].db = self.db
+            if "trends" in self._pages:
+                self._pages["trends"].db = self.db
 
             # Mark all existing files in watch folder as processed
             # so the watcher doesn't re-ingest them after reset

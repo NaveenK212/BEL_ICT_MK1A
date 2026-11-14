@@ -253,6 +253,20 @@ class DBManager:
             rows = con.execute(sql, params).fetchall()
         return [dict(r) for r in rows]
 
+    def get_board_component_rows(self, board_name: str) -> list:
+        """Every component row of every run of ONE board, oldest test first.
+        Feeds the Trends tab (component-wise trend across runs)."""
+        with self._connect() as con:
+            rows = con.execute(
+                """SELECT r.id AS run_id, r.serial, r.timestamp,
+                          c.ref, c.type, c.nominal, c.measured,
+                          c.lower_limit, c.upper_limit, c.deviation,
+                          c.status, c.note
+                   FROM components c JOIN runs r ON r.id = c.run_id
+                   WHERE r.board_name = ?
+                   ORDER BY r.timestamp, r.id""", (board_name,)).fetchall()
+        return [dict(r) for r in rows]
+
     def get_board_names(self) -> list:
         with self._connect() as con:
             rows = con.execute(
